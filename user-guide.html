@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>scan-git-push — Руководство пользователя</title>
+<style>
+:root {
+  --bg: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --border: #30363d;
+  --text: #c9d1d9;
+  --text-muted: #8b949e;
+  --accent: #58a6ff;
+  --green: #3fb950;
+  --yellow: #d29922;
+  --red: #f85149;
+  --purple: #bc8cff;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.6;
+  padding: 24px;
+}
+.container { max-width: 900px; margin: 0 auto; }
+h1 { color: var(--accent); font-size: 2em; margin-bottom: 8px; }
+h2 { color: var(--accent); font-size: 1.4em; margin-top: 32px; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+h3 { color: var(--purple); font-size: 1.1em; margin-top: 20px; margin-bottom: 8px; }
+p { margin-bottom: 12px; }
+.subtitle { color: var(--text-muted); font-size: 1.1em; margin-bottom: 24px; }
+.badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 0.8em;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+.badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
+.badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+.prereq-box {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin-bottom: 16px;
+}
+.prereq-box.ok { border-left: 4px solid var(--green); }
+.prereq-box.optional { border-left: 4px solid var(--yellow); }
+code {
+  background: var(--bg-tertiary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+  font-size: 0.9em;
+  color: var(--purple);
+}
+pre {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  overflow-x: auto;
+  margin: 12px 0;
+}
+pre code { background: none; padding: 0; color: var(--text); }
+.file-path {
+  font-family: monospace;
+  color: var(--accent);
+  font-size: 0.9em;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+}
+th, td {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+th { color: var(--accent); font-weight: 600; }
+tr:hover { background: var(--bg-secondary); }
+.toc {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  margin: 20px 0;
+}
+.toc ol { padding-left: 20px; }
+.toc a { color: var(--accent); text-decoration: none; }
+.toc a:hover { text-decoration: underline; }
+.note {
+  background: rgba(88,166,255,0.08);
+  border: 1px solid rgba(88,166,255,0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+.note-title { color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+.warning {
+  background: rgba(210,153,34,0.08);
+  border: 1px solid rgba(210,153,34,0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 12px 0;
+}
+.warning-title { color: var(--yellow); font-weight: 600; margin-bottom: 4px; }
+.error-box {
+  background: rgba(248,81,73,0.08);
+  border: 1px solid rgba(248,81,73,0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+.error-code { color: var(--red); font-weight: 700; }
+.success-box {
+  background: rgba(63,185,80,0.08);
+  border: 1px solid rgba(63,185,80,0.3);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+.step-num {
+  display: inline-block;
+  background: var(--accent);
+  color: #fff;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  text-align: center;
+  line-height: 24px;
+  font-size: 0.8em;
+  font-weight: 700;
+  margin-right: 8px;
+}
+.footer {
+  margin-top: 40px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.85em;
+  text-align: center;
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>scan-git-push</h1>
+<p class="subtitle">LLM-анализ git push изменений репозитория · Руководство пользователя</p>
+
+<div class="toc">
+  <strong>Содержание</strong>
+  <ol>
+    <li><a href="#overview">Обзор</a></li>
+    <li><a href="#prerequisites">Предусловия</a></li>
+    <li><a href="#installation">Установка</a></li>
+    <li><a href="#configuration">Конфигурация</a></li>
+    <li><a href="#usage">Запуск</a></li>
+    <li><a href="#output">Результаты</a></li>
+    <li><a href="#troubleshooting">Решение проблем</a></li>
+  </ol>
+</div>
+
+<h2 id="overview">1. Обзор</h2>
+<p><code>scan-git-push</code> — утилита для анализа коммитов GitHub-репозитория за указанный период. Использует LLM (Ollama или GitHub Models API) для генерации саммари каждого коммита.</p>
+
+<table>
+  <tr><th>Характеристика</th><th>Описание</th></tr>
+  <tr><td>Язык</td><td>Python 3.11+</td></tr>
+  <tr><td>LLM провайдеры</td><td><span class="badge badge-green">Ollama</span><span class="badge badge-blue">GitHub Models API</span></td></tr>
+  <tr><td>Форматы вывода</td><td><span class="badge badge-green">Консоль</span><span class="badge badge-blue">Markdown</span><span class="badge badge-yellow">HTML</span></td></tr>
+  <tr><td>Анализируемый период</td><td>1–365 дней (настраивается)</td></tr>
+</table>
+
+<h2 id="prerequisites">2. Предусловия</h2>
+
+<div class="prereq-box ok">
+  <span class="badge badge-green">Обязательно</span> <strong>Python 3.11+</strong>
+  <p style="margin-top:8px; margin-bottom:0;">Скачать: <a href="https://www.python.org/downloads/" style="color:var(--accent);">python.org/downloads</a></p>
+</div>
+
+<div class="prereq-box ok">
+  <span class="badge badge-green">Обязательно</span> <strong>Файл секретов</strong> <code>d:\projects\fullstack-demo\.secrets</code>
+  <p style="margin-top:8px; margin-bottom:0;">Формат файла:</p>
+  <pre><code>GITHUB_TOKEN=ghp_ваш_токен_github
+GITHUB_MODELS_TOKEN=ghp_ваш_токен_github</code></pre>
+  <p style="margin-top:8px; margin-bottom:0;"><em>Оба токена могут быть одинаковыми (используйте GitHub Personal Access Token с правом <code>repo</code>).</em></p>
+</div>
+
+<div class="prereq-box ok">
+  <span class="badge badge-green">Обязательно</span> <strong>Хотя бы один LLM-провайдер:</strong>
+  <ul style="margin-top:8px; padding-left:20px;">
+    <li><strong>Ollama</strong> — запущена локально на <code>http://localhost:11434</code> с установленной моделью</li>
+    <li><strong>GitHub Models API</strong> — доступен бесплатный тариф (требуется токен GitHub)</li>
+  </ul>
+</div>
+
+<div class="prereq-box optional">
+  <span class="badge badge-yellow">Опционально</span> <strong>Git</strong> — не обязателен, утилита работает через GitHub API
+</div>
+
+<h2 id="installation">3. Установка</h2>
+
+<p><span class="step-num">1</span> Клонировать репозиторий и перейти в каталог:</p>
+<pre><code>cd D:\projects\scan-git-push</code></pre>
+
+<p><span class="step-num">2</span> Создать виртуальное окружение:</p>
+<pre><code>python -m venv .venv</code></pre>
+
+<p><span class="step-num">3</span> Активировать окружение:</p>
+<pre><code># Windows:
+.venv\Scripts\activate
+
+# Linux/macOS:
+source .venv/bin/activate</code></pre>
+
+<p><span class="step-num">4</span> Установить зависимости:</p>
+<pre><code>pip install -e ".[dev]"</code></pre>
+
+<h2 id="configuration">4. Конфигурация</h2>
+
+<p>Отредактируйте файл <span class="file-path">config.json</span>:</p>
+
+<pre><code>{
+  "GIT_PROJECT": "https://github.com/AlexOstrov/fullstack-demo.git",
+  "GIT_DAY": 7,
+  "SECRETS_PATH": "d:\\projects\\fullstack-demo\\.secrets",
+  "LLM_PROVIDER": "ollama",
+  "OLLAMA_BASE_URL": "http://localhost:11434",
+  "OLLAMA_MODEL": "llama3.1:8b",
+  "GH_MODELS_MODEL": "gpt-4o-mini",
+  "GH_MODELS_ENDPOINT": "https://models.github.ai/inference"
+}</code></pre>
+
+<table>
+  <tr><th>Параметр</th><th>Описание</th><th>Значение по умолчанию</th></tr>
+  <tr><td><code>GIT_PROJECT</code></td><td>URL GitHub-репозитория</td><td>—</td></tr>
+  <tr><td><code>GIT_DAY</code></td><td>Количество дней для анализа (1–365)</td><td>7</td></tr>
+  <tr><td><code>SECRETS_PATH</code></td><td>Путь к файлу с токенами</td><td><code>d:\projects\fullstack-demo\.secrets</code></td></tr>
+  <tr><td><code>LLM_PROVIDER</code></td><td><code>ollama</code> или <code>github_models</code></td><td><code>ollama</code></td></tr>
+  <tr><td><code>OLLAMA_MODEL</code></td><td>Модель Ollama для анализа</td><td><code>llama3.1:8b</code></td></tr>
+  <tr><td><code>GH_MODELS_MODEL</code></td><td>Модель GitHub Models API</td><td><code>gpt-4o-mini</code></td></tr>
+</table>
+
+<h2 id="usage">5. Запуск</h2>
+
+<h3>Базовый запуск</h3>
+<pre><code>python -m scan_git_push</code></pre>
+
+<h3>С указанием пути к конфигу</h3>
+<pre><code>python -m scan_git_push --config C:\path\to\config.json</code></pre>
+
+<h3>Процесс работы</h3>
+<ol style="padding-left:20px; margin-top:8px;">
+  <li>Утилита загружает конфигурацию и проверяет секреты</li>
+  <li>Проверяет доступность выбранного LLM-провайдера</li>
+  <li>Получает список доступных моделей</li>
+  <li><strong>Запрашивает у пользователя выбор модели</strong> (нумерованный список)</li>
+  <li>Получает коммиты из репозитория за указанный период</li>
+  <li>Анализирует каждый коммит через LLM с прогресс-баром</li>
+  <li>Генерирует отчёты в консоль, Markdown и HTML</li>
+</ol>
+
+<div class="note">
+  <div class="note-title">Интерактивный выбор модели</div>
+  <p style="margin-bottom:0;">При запуске утилита покажет нумерованный список доступных моделей. Введите номер модели и нажмите Enter.</p>
+</div>
+
+<h2 id="output">6. Результаты</h2>
+
+<h3>Консоль</h3>
+<p>Формированный вывод с прогресс-баром, списком файлов и саммари каждого коммита.</p>
+
+<h3>Markdown-отчёт</h3>
+<p>Сохраняется в <code>reports/{repo}_{date}.md</code> — структурированный отчёт со всеми коммитами.</p>
+
+<h3>Интерактивный HTML-отчёт</h3>
+<p>Сохраняется в <code>reports/{repo}_{date}.html</code> — автономный файл (не требует интернета) с:</p>
+<ul style="padding-left:20px;">
+  <li>Навигацией по коммитам (боковая панель)</li>
+  <li>Статистикой (коммиты, файлы, LLM chunks)</li>
+  <li>Саммари каждого коммита</li>
+</ul>
+
+<h2 id="troubleshooting">7. Решение проблем</h2>
+
+<table>
+  <tr>
+    <th style="width:30%">Ошибка</th>
+    <th>Причина</th>
+    <th style="width:35%">Решение</th>
+  </tr>
+  <tr>
+    <td><code>Exit code: 1</code><br>Secrets file not found</td>
+    <td>Файл <code>.secrets</code> отсутствует по указанному пути</td>
+    <td>Создайте файл <code>d:\projects\fullstack-demo\.secrets</code> с токенами</td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 2</code><br>GITHUB_TOKEN not found / empty</td>
+    <td>Токен отсутствует или пуст в файле секретов</td>
+    <td>Проверьте формат: <code>GITHUB_TOKEN=ghp_...</code></td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 3</code><br>Ollama NOT available</td>
+    <td>Ollama не запущен или недоступен</td>
+    <td>Запустите Ollama: <code>ollama serve</code>. Проверьте URL в конфиге</td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 4</code><br>GitHub Models API NOT available</td>
+    <td>Неверный токен или нет доступа к API</td>
+    <td>Проверьте <code>GITHUB_MODELS_TOKEN</code> в файле секретов</td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 5</code><br>Repository not found</td>
+    <td>Репозиторий не существует или нет доступа</td>
+    <td>Проверьте URL в <code>GIT_PROJECT</code>, убедитесь в правах доступа</td>
+  </tr>
+  <tr>
+    <td><code>BadCredentialsException: 401</code></td>
+    <td>Недействительный GitHub токен</td>
+    <td>Создайте новый токен на github.com/settings/tokens</td>
+  </tr>
+  <tr>
+    <td>Модель не найдена в Ollama</td>
+    <td>Указанная модель не установлена</td>
+    <td>Установите: <code>ollama pull llama3.1:8b</code></td>
+  </tr>
+  <tr>
+    <td><code>No commits found</code></td>
+    <td>В указанный период нет коммитов</td>
+    <td>Увеличьте <code>GIT_DAY</code> или проверьте репозиторий</td>
+  </tr>
+  <tr>
+    <td>Медленный анализ</td>
+    <td>Большой репозиторий или медленная модель</td>
+    <td>Уменьшите <code>GIT_DAY</code>, используйте меньшую модель Ollama</td>
+  </tr>
+</table>
+
+<div class="warning">
+  <div class="warning-title">Важно: GitHub API Rate Limits</div>
+  <p style="margin-bottom:0;">Без аутентификации GitHub ограничивает запросы до 60/час. С токеном — 5000/час. Утилита использует retry с backoff, но при частом запуске лимиты могут исчерпываться.</p>
+</div>
+
+<h3>Проверка доступности Ollama</h3>
+<pre><code># Проверить, что Ollama запущена:
+curl http://localhost:11434/api/tags
+
+# Список установленных моделей:
+ollama list
+
+# Установить модель (если нужно):
+ollama pull llama3.1:8b</code></pre>
+
+<h3>Пример файла секретов</h3>
+<pre><code>GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+GITHUB_MODELS_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
+
+<div class="note">
+  <div class="note-title">Безопасность</div>
+  <p style="margin-bottom:0;">Файл <code>.secrets</code> добавлен в <code>.gitignore</code> и не коммитится в репозиторий.</p>
+</div>
+
+<div class="footer">
+  scan-git-push v0.1.0 · LLM-powered git commit analysis · Generated 2026-10-18
+</div>
+
+</div>
+</body>
+</html>
