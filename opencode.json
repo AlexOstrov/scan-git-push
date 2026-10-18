@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "schema": "https://opencode.ai/schemas/config.json",
+  "project": "scan-git-push",
+  "language": "Python 3.11+",
+  "framework": "Typer + Rich + Pydantic Settings",
+  "llm_providers": ["ollama", "github_models"],
+  "secrets_path": "d:\\projects\\fullstack-demo\\.secrets",
+  "output_formats": ["console", "markdown", "html"],
+  "retry_policy": {
+    "max_retries": 3,
+    "backoff_factor": 2,
+    "timeout_seconds": 30
+  },
+  "diff_chunking": {
+    "max_chars_per_chunk": 12000,
+    "split_on": "file_boundaries"
+  },
+  "memory": {
+    "directory": "docs/memory",
+    "state_file": "STATE.md",
+    "update_on": ["feature_completed", "architecture_decision", "task_completed"]
+  },
+  "structure": {
+    "source": "scan_git_push/",
+    "tests": "tests/",
+    "reports": "reports/",
+    "docs": "docs/memory/"
+  }
+}
