@@ -1,11 +1,19 @@
 # Текущее состояние проекта
 
 ## Текущая задача
-Разработка утилиты scan-git-push: анализ git push изменений с LLM-анализатором
+Реализация полного CLI с выбором модели и прогресс-баром
 
 ## Реализованы
 - ТЗ актуализировано (полное, непротиворечивое, реализуемое)
 - Базовая конфигурация проекта (opencode.json, config.json)
+- Структура каталогов и pyproject.toml
+- Конфигурация (config.py с Pydantic Settings)
+- GitHub-клиент с retry logic (github_client.py)
+- LLM-провайдеры (llm/base.py, llm/ollama.py, llm/github_models.py)
+- Заглушка CLI (cli.py с Typer)
+- Анализатор коммитов с chunking (analyzer.py)
+- Репортёры (console.py, markdown.py, html.py)
+- Менеджер памяти (memory/manager.py)
 
 ## Архитектурные решения
 - Python 3.11+ с Typer + Rich + Pydantic Settings
@@ -16,14 +24,9 @@
 - Артефактная память в docs/memory/ с формат STATE.md
 
 ## Следующие шаги
-1. Создать структуру проекта (pyproject.toml, каталоги)
-2. Реализовать конфигурацию (config.py с pydantic-settings)
-3. Реализовать GitHub-клиент с retry (github_client.py)
-4. Реализовать LLM-провайдеры (ollama.py, github_models.py)
-5. Реализовать анализатор коммитов с chunking (analyzer.py)
-6. Реализовать репортёры (console.py, markdown.py, html.py)
-7. Реализовать менеджер памяти (memory/manager.py)
-8. Написать тесты
+1. Полностью реализовать CLI (cli.py с выбором модели и прогресс-баром)
+2. Написать тесты
+3. Заполнить config.json реальными данными
 
 ## Последнее обновление
 2026-10-18
