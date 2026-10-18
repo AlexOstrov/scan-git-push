@@ -38,7 +38,7 @@ class TestCommitAnalyzer:
         assert result.chunks_analyzed == 1
         assert "test_file.py" in result.files
 
-    def test_chunk_diff(self) -> None:
+    def test_chunk_diff(self, sample_commit_data) -> None:
         """Test that large diffs are properly chunked."""
         mock_llm = MagicMock()
         mock_llm.generate.return_value = LLMResponse(
@@ -78,7 +78,7 @@ class TestCommitAnalyzer:
         assert result.chunks_analyzed >= 1
         mock_llm.generate.assert_called()
 
-    def test_chunk_on_file_boundaries(self) -> None:
+    def test_chunk_on_file_boundaries(self, sample_commit_data) -> None:
         """Test that chunking respects file boundaries."""
         mock_llm = MagicMock()
         mock_llm.generate.return_value = LLMResponse(
@@ -123,7 +123,7 @@ class TestCommitAnalyzer:
         # Should be analyzed in multiple chunks
         assert result.chunks_analyzed >= 2
 
-    def test_merge_summaries(self) -> None:
+    def test_merge_summaries(self, sample_commit_data) -> None:
         """Test merging multiple chunk summaries."""
         mock_llm = MagicMock()
         mock_llm.generate.return_value = LLMResponse(

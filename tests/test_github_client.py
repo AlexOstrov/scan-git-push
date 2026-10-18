@@ -14,19 +14,31 @@ class TestGitHubClient:
     """Test GitHubClient class."""
 
     def test_extract_repo_name_https(self) -> None:
-        """Test extracting repo name from HTTPS URL."""
+        """Test extracting owner/repo from HTTPS URL."""
         client = GitHubClient(token="test", repo_url="https://github.com/owner/repo")
-        assert client.repo  # Should not raise
+        url = client.repo_url.rstrip("/")
+        path = url[len("https://github.com/"):]
+        owner, repo_name = path.removesuffix(".git").split("/", 1)
+        assert owner == "owner"
+        assert repo_name == "repo"
 
     def test_extract_repo_name_git_suffix(self) -> None:
-        """Test extracting repo name from URL with .git suffix."""
+        """Test extracting owner/repo from URL with .git suffix."""
         client = GitHubClient(token="test", repo_url="https://github.com/owner/repo.git")
-        assert client.repo  # Should not raise
+        url = client.repo_url.rstrip("/")
+        path = url[len("https://github.com/"):]
+        owner, repo_name = path.removesuffix(".git").split("/", 1)
+        assert owner == "owner"
+        assert repo_name == "repo"
 
     def test_extract_repo_name_ssh(self) -> None:
-        """Test extracting repo name from SSH URL."""
+        """Test extracting owner/repo from SSH URL."""
         client = GitHubClient(token="test", repo_url="git@github.com:owner/repo.git")
-        assert client.repo  # Should not raise
+        url = client.repo_url.rstrip("/")
+        path = url[len("git@github.com:"):]
+        owner, repo_name = path.removesuffix(".git").split("/", 1)
+        assert owner == "owner"
+        assert repo_name == "repo"
 
     def test_invalid_url_format(self) -> None:
         """Test that invalid URL format raises ValueError."""

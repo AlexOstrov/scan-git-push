@@ -70,7 +70,8 @@ class GitHubClient:
             path = path.removesuffix(".git")
             owner, repo_name = path.split("/", 1)
 
-            gh = Github(self.token, timeout=self.timeout)
+            from github import Auth
+            gh = Github(auth=Auth.Token(self.token), timeout=int(self.timeout))
             self._repo = gh.get_repo(f"{owner}/{repo_name}")
 
         return self._repo
