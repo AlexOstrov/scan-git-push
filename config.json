@@ -1,5 +1,5 @@
 {
-  "GIT_PROJECT": "",
+  "GIT_PROJECT": "https://github.com/AlexOstrov/fullstack-demo.git",
   "GIT_DAY": 7,
   "SECRETS_PATH": "d:\\projects\\fullstack-demo\\.secrets",
   "LLM_PROVIDER": "ollama",
