@@ -10,16 +10,16 @@
 
 ## 2. Стек разработки
 
-| Компонент | Выбор |
-|-----------|-------|
-| Язык | Python 3.11+ |
-| GitHub API | `PyGithub` |
-| Ollama API | `ollama` (Python SDK) |
-| GitHub Models API | `openai` (OpenAI-совместимый endpoint) |
-| CLI-фреймворк | `typer` |
-| Форматирование вывода | `rich` (консоль), `jinja2` (HTML) |
-| Конфигурация | `pydantic-settings` (валидация) |
-| Логирование | `loguru` |
+| Компонент             | Выбор                                  |
+|-----------------------|----------------------------------------|
+| Язык                  | Python 3.11+                           |
+| GitHub API            | `PyGithub`                             |
+| Ollama API            | `ollama` (Python SDK)                  |
+| GitHub Models API     | `openai` (OpenAI-совместимый endpoint) |
+| CLI-фреймворк         | `typer`                                |
+| Форматирование вывода | `rich` (консоль), `jinja2` (HTML)      |
+| Конфигурация          | `pydantic-settings` (валидация)        |
+| Логирование           | `loguru`                               |
 
 ---
 

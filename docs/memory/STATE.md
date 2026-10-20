@@ -1,7 +1,7 @@
 # Текущее состояние проекта
 
 ## Текущая задача
-Все задачи выполнены, проект готов к использованию
+Проверка работы с GitHub Models API в реальном окружении (требует интернет)
 
 ## Реализованы
 - ТЗ актуализировано (полное, непротиворечивое, реализуемое)
@@ -16,9 +16,13 @@
 - Полный CLI с выбором модели, проверками и прогресс-баром (cli.py)
 - config.json заполнен (GIT_PROJECT: fullstack-demo)
 - Тесты написаны (config, github_client, analyzer, llm_providers, reporters, memory_manager)
-- Все 38 тестов проходят успешно
+- Все 50 тестов проходят успешно
 - Dev-зависимости добавлены (pytest, pytest-asyncio, pytest-cov)
 - README.md создан
+- Валидация GITHUB_MODELS_TOKEN (понятная ошибка, exit code 6) — cli.py
+- Runtime-переключение провайдеров: опрашиваются оба, модели из всех доступных в одном списке
+- Надёжный GitHubModelsProvider: availability через chat-запрос, list_models с fallback на KNOWN_GITHUB_MODELS
+- Понятная ошибка при отсутствии GITHUB_MODELS_TOKEN (проверено: exit code 6)
 
 ## Архитектурные решения
 - Python 3.11+ с Typer + Rich + Pydantic Settings
@@ -27,9 +31,11 @@
 - Retry с exponential backoff (3 попытки, factor 2)
 - Chunking больших diff по границам файлов (лимит 12000 символов)
 - Артефактная память в docs/memory/ с формат STATE.md
+- GitHub Models API не отдаёт JSON /models → свой fallback-список моделей
+- models.github.ai в песочнице перехватывается (отдаёт "OK"), реальная проверка недоступна
 
 ## Следующие шаги
-1. Запустить утилиту с реальным Ollama или GitHub Models API
+1. Запустить утилиту с GitHub Models API в реальном окружении (проверить генерацию отчётов)
 
 ## Последнее обновление
-2026-10-18
+2026-10-20

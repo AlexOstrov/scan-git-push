@@ -11,9 +11,8 @@ python -m scan_git_push
 ```
 
 Requires:
-- Ollama running locally at `http://localhost:11434` (if using `ollama` provider), OR
-- GitHub Models API access via token
-- Secrets file at `d:\projects\fullstack-demo\.secrets` (INI format: `GITHUB_TOKEN`, `GITHUB_MODELS_TOKEN`)
+- Secrets file at `d:\projects\fullstack-demo\.secrets` with `GITHUB_TOKEN` (always) and `GITHUB_MODELS_TOKEN` (required when `LLM_PROVIDER=github_models`)
+- At least one LLM provider: Ollama at `http://localhost:11434` or GitHub Models API (`https://models.github.ai/inference`, needs internet)
 
 Configuration: `config.json` (validated via Pydantic Settings).
 
@@ -39,7 +38,9 @@ scan_git_push/
 
 ## Key Conventions
 
-- **LLM providers**: Selected at runtime from available models; support both `ollama` and `github_models`
+- **LLM providers**: On startup both providers are probed best-effort; models from all available providers are offered in one interactive list (runtime switching). `LLM_PROVIDER` only sets the default and token requirement.
+- **Token validation**: `GITHUB_MODELS_TOKEN` is validated with a clear message and exit code 6 when `LLM_PROVIDER=github_models`; if absent and provider is `ollama`, GitHub Models is skipped gracefully.
+- **GitHub Models listing**: `GitHubModelsProvider` checks availability via a minimal chat request and falls back to a curated `KNOWN_GITHUB_MODELS` list because the inference endpoint does not expose a JSON `/models` listing.
 - **Diff chunking**: Splits on file boundaries at 12 000 chars (`MAX_DIFF_CHARS_PER_CHUNK`); merges per-chunk summaries
 - **Retry policy**: 3 attempts, exponential backoff factor 2, 30 s HTTP timeout
 - **Merge commits**: Excluded from analysis

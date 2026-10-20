@@ -1,8 +1,8 @@
 {
   "GIT_PROJECT": "https://github.com/AlexOstrov/fullstack-demo.git",
-  "GIT_DAY": 7,
+  "GIT_DAY": 1,
   "SECRETS_PATH": "d:\\projects\\fullstack-demo\\.secrets",
-  "LLM_PROVIDER": "ollama",
+  "LLM_PROVIDER": "github_models",
   "OLLAMA_BASE_URL": "http://localhost:11434",
   "OLLAMA_MODEL": "llama3.1:8b",
   "GH_MODELS_MODEL": "gpt-4o-mini",

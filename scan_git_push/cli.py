@@ -41,6 +41,7 @@ def _check_secrets(settings: Settings) -> None:
         console.print(f"[red]Error: Secrets file not found: {secrets_path}[/red]")
         raise typer.Exit(code=1)
 
+    # GITHUB_TOKEN is always required to read the repository.
     try:
         token = settings.github_token
         if not token:
@@ -49,21 +50,39 @@ def _check_secrets(settings: Settings) -> None:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(code=2)
 
-
-def _check_ollama(settings: Settings) -> bool:
-    """Check if Ollama is available."""
-    provider = OllamaProvider(model="", base_url=settings.ollama_base_url)
-    return provider.is_available()
+    # GITHUB_MODELS_TOKEN is required only when the GitHub Models provider is selected.
+    if settings.llm_provider == "github_models":
+        _require_github_models_token(settings)
 
 
-def _check_github_models(settings: Settings) -> bool:
-    """Check if GitHub Models API is available."""
-    provider = GitHubModelsProvider(
-        model=settings.gh_models_model,
-        endpoint=settings.gh_models_endpoint,
-        token=settings.github_models_token,
-    )
-    return provider.is_available()
+def _require_github_models_token(settings: Settings) -> str:
+    """Validate that GITHUB_MODELS_TOKEN exists and is non-empty.
+
+    Returns the token on success, or exits with a clear error (code 6).
+    """
+    try:
+        token = settings.github_models_token
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        console.print(
+            f"[red]Error: GITHUB_MODELS_TOKEN is missing from the secrets file "
+            f"({settings.secrets_path}).\n"
+            f"Add it as: GITHUB_MODELS_TOKEN=<your_github_token>[/red]"
+        )
+        raise typer.Exit(code=6) from exc
+
+    if not token:
+        console.print("[red]Error: GITHUB_MODELS_TOKEN is empty in the secrets file.[/red]")
+        raise typer.Exit(code=6)
+
+    return token
+
+
+def _try_github_models_token(settings: Settings) -> str | None:
+    """Return GITHUB_MODELS_TOKEN if present, otherwise None (best effort)."""
+    try:
+        return settings.github_models_token or None
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
 
 
 def _prompt_model_selection(
@@ -121,34 +140,54 @@ def main(
     # Validate secrets
     _check_secrets(settings)
 
-    # Check provider availability
+    # Check provider availability. Both providers are queried best-effort so the
+    # user can switch between them at runtime by picking any listed model.
     console.print("[bold]Checking LLM provider availability...[/bold]\n")
 
     ollama_models: list[str] = []
     gh_models: list[str] = []
 
-    if settings.llm_provider == "ollama":
-        ollama_provider = OllamaProvider(model="", base_url=settings.ollama_base_url)
-        if ollama_provider.is_available():
-            ollama_models = ollama_provider.list_models()
-            console.print(f"  [green]Ollama[/green] available at {settings.ollama_base_url}")
-        else:
-            console.print(f"  [red]Ollama[/red] NOT available at {settings.ollama_base_url}")
-            raise typer.Exit(code=3)
-    elif settings.llm_provider == "github_models":
+    # Ollama (local) — no token required.
+    ollama_provider = OllamaProvider(model="", base_url=settings.ollama_base_url)
+    if ollama_provider.is_available():
+        ollama_models = ollama_provider.list_models()
+        console.print(
+            f"  [green]Ollama[/green] available at {settings.ollama_base_url} "
+            f"({len(ollama_models)} model(s))"
+        )
+    else:
+        console.print(
+            f"  [dim]Ollama[/dim] not available at {settings.ollama_base_url} — skipped"
+        )
+
+    # GitHub Models API — token required when selected via config, optional otherwise.
+    gh_models_token: str | None
+    if settings.llm_provider == "github_models":
+        gh_models_token = _require_github_models_token(settings)
+    else:
+        gh_models_token = _try_github_models_token(settings)
+
+    if gh_models_token:
         gh_provider = GitHubModelsProvider(
             model=settings.gh_models_model,
             endpoint=settings.gh_models_endpoint,
-            token=settings.github_models_token,
+            token=gh_models_token,
         )
         if gh_provider.is_available():
             gh_models = gh_provider.list_models()
-            console.print("  [green]GitHub Models API[/green] available")
+            console.print(
+                f"  [green]GitHub Models API[/green] available ({len(gh_models)} model(s))"
+            )
         else:
-            console.print("  [red]GitHub Models API[/red] NOT available")
-            raise typer.Exit(code=4)
+            console.print("  [dim]GitHub Models API[/dim] not reachable — skipped")
+    else:
+        console.print("  [dim]GitHub Models API[/dim] skipped (no GITHUB_MODELS_TOKEN)")
 
-    # Model selection
+    if not ollama_models and not gh_models:
+        console.print("[red]Error: No LLM models available from any provider.[/red]")
+        raise typer.Exit(code=3)
+
+    # Model selection (provider is chosen here, at runtime)
     provider_name, model_name = _prompt_model_selection(ollama_models, gh_models)
     console.print(f"\n  Selected: [bold]{provider_name}[/bold] / [bold]{model_name}[/bold]\n")
 
