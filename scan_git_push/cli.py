@@ -16,6 +16,7 @@ from scan_git_push.config import Settings
 from scan_git_push.github_client import GitHubClient
 from scan_git_push.llm.ollama import OllamaProvider
 from scan_git_push.llm.github_models import GitHubModelsProvider
+from scan_git_push.llm.groq import GroqProvider
 from scan_git_push.memory.manager import MemoryManager
 from scan_git_push.reporters.console import ConsoleReporter
 from scan_git_push.reporters.markdown import MarkdownReporter
@@ -50,9 +51,11 @@ def _check_secrets(settings: Settings) -> None:
         console.print(f"[red]Error: {exc}[/red]")
         raise typer.Exit(code=2)
 
-    # GITHUB_MODELS_TOKEN is required only when the GitHub Models provider is selected.
+    # GITHUB_MODELS_TOKEN / GROQ_API_KEY are required only when their provider is selected.
     if settings.llm_provider == "github_models":
         _require_github_models_token(settings)
+    elif settings.llm_provider == "groq":
+        _require_groq_token(settings)
 
 
 def _require_github_models_token(settings: Settings) -> str:
@@ -85,9 +88,40 @@ def _try_github_models_token(settings: Settings) -> str | None:
         return None
 
 
+def _require_groq_token(settings: Settings) -> str:
+    """Validate that GROQ_API_KEY exists and is non-empty.
+
+    Returns the token on success, or exits with a clear error (code 7).
+    """
+    try:
+        token = settings.groq_api_key
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        console.print(
+            f"[red]Error: GROQ_API_KEY is missing from the secrets file "
+            f"({settings.secrets_path}).\n"
+            f"Add it as: GROQ_API_KEY=<your_groq_key>[/red]"
+        )
+        raise typer.Exit(code=7) from exc
+
+    if not token:
+        console.print("[red]Error: GROQ_API_KEY is empty in the secrets file.[/red]")
+        raise typer.Exit(code=7)
+
+    return token
+
+
+def _try_groq_token(settings: Settings) -> str | None:
+    """Return GROQ_API_KEY if present, otherwise None (best effort)."""
+    try:
+        return settings.groq_api_key or None
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
+
+
 def _prompt_model_selection(
     ollama_models: list[str],
     gh_models: list[str],
+    groq_models: list[str] | None = None,
 ) -> tuple[str, str]:
     """Prompt user to select a model. Returns (provider, model_name)."""
     console.print("\n[bold cyan]Available LLM models:[/bold cyan]\n")
@@ -98,6 +132,8 @@ def _prompt_model_selection(
         options.append(("ollama", m, f"[Ollama] {m}"))
     for m in gh_models:
         options.append(("github_models", m, f"[GitHub Models] {m}"))
+    for m in groq_models or []:
+        options.append(("groq", m, f"[Groq] {m}"))
 
     if not options:
         console.print("[red]Error: No models available from any provider.[/red]")
@@ -183,12 +219,35 @@ def main(
     else:
         console.print("  [dim]GitHub Models API[/dim] skipped (no GITHUB_MODELS_TOKEN)")
 
-    if not ollama_models and not gh_models:
+    # Groq — token required when selected via config, optional otherwise.
+    groq_models: list[str] = []
+    if settings.llm_provider == "groq":
+        groq_token = _require_groq_token(settings)
+    else:
+        groq_token = _try_groq_token(settings)
+
+    if groq_token:
+        groq_provider = GroqProvider(
+            model=settings.groq_model,
+            endpoint=settings.groq_endpoint,
+            token=groq_token,
+        )
+        if groq_provider.is_available():
+            groq_models = groq_provider.list_models()
+            console.print(f"  [green]Groq[/green] available ({len(groq_models)} model(s))")
+        else:
+            console.print("  [dim]Groq[/dim] not reachable — skipped")
+    else:
+        console.print("  [dim]Groq[/dim] skipped (no GROQ_API_KEY)")
+
+    if not ollama_models and not gh_models and not groq_models:
         console.print("[red]Error: No LLM models available from any provider.[/red]")
         raise typer.Exit(code=3)
 
     # Model selection (provider is chosen here, at runtime)
-    provider_name, model_name = _prompt_model_selection(ollama_models, gh_models)
+    provider_name, model_name = _prompt_model_selection(
+        ollama_models, gh_models, groq_models
+    )
     console.print(f"\n  Selected: [bold]{provider_name}[/bold] / [bold]{model_name}[/bold]\n")
 
     # Create LLM provider instance
@@ -199,11 +258,19 @@ def main(
             max_retries=settings.max_retries,
             backoff_factor=settings.backoff_factor,
         )
-    else:
+    elif provider_name == "github_models":
         llm = GitHubModelsProvider(
             model=model_name,
             endpoint=settings.gh_models_endpoint,
             token=settings.github_models_token,
+            max_retries=settings.max_retries,
+            backoff_factor=settings.backoff_factor,
+        )
+    else:
+        llm = GroqProvider(
+            model=model_name,
+            endpoint=settings.groq_endpoint,
+            token=settings.groq_api_key,
             max_retries=settings.max_retries,
             backoff_factor=settings.backoff_factor,
         )

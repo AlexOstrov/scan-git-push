@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     # LLM provider selection
-    llm_provider: Literal["ollama", "github_models"] = Field(
+    llm_provider: Literal["ollama", "github_models", "groq"] = Field(
         default="ollama",
         alias="LLM_PROVIDER",
     )
@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     gh_models_endpoint: str = Field(
         default="https://models.github.ai/inference",
         alias="GH_MODELS_ENDPOINT",
+    )
+
+    # Groq settings
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        alias="GROQ_MODEL",
+    )
+    groq_endpoint: str = Field(
+        default="https://api.groq.com/openai/v1",
+        alias="GROQ_ENDPOINT",
     )
 
     # Analysis settings
@@ -82,6 +92,11 @@ class Settings(BaseSettings):
     def github_models_token(self) -> str:
         """Read GitHub Models token from secrets file."""
         return self._read_secret("GITHUB_MODELS_TOKEN")
+
+    @property
+    def groq_api_key(self) -> str:
+        """Read Groq API key from secrets file."""
+        return self._read_secret("GROQ_API_KEY")
 
     def _read_secret(self, key: str) -> str:
         """Read a secret value from the secrets file."""

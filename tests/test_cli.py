@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 import typer
 
-from scan_git_push.cli import _check_secrets, _require_github_models_token, _try_github_models_token
+from scan_git_push.cli import (
+    _check_secrets,
+    _require_github_models_token,
+    _require_groq_token,
+    _try_github_models_token,
+)
 from scan_git_push.config import Settings
 
 
@@ -51,6 +56,32 @@ class TestRequireGitHubModelsToken:
         assert exc.value.exit_code == 6
 
 
+class TestRequireGroqToken:
+    """Test _require_groq_token."""
+
+    def test_token_present(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\nGROQ_API_KEY=g\n", encoding="utf-8")
+        settings = _settings(secrets)
+        assert _require_groq_token(settings) == "g"
+
+    def test_token_missing(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
+        settings = _settings(secrets)
+        with pytest.raises(typer.Exit) as exc:
+            _require_groq_token(settings)
+        assert exc.value.exit_code == 7
+
+    def test_token_empty(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\nGROQ_API_KEY=\n", encoding="utf-8")
+        settings = _settings(secrets)
+        with pytest.raises(typer.Exit) as exc:
+            _require_groq_token(settings)
+        assert exc.value.exit_code == 7
+
+
 class TestTryGitHubModelsToken:
     """Test _try_github_models_token (best effort)."""
 
@@ -92,6 +123,14 @@ class TestCheckSecrets:
         settings = _settings(secrets, llm_provider="ollama")
         # Should not raise
         _check_secrets(settings)
+
+    def test_groq_provider_requires_token(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
+        settings = _settings(secrets, llm_provider="groq")
+        with pytest.raises(typer.Exit) as exc:
+            _check_secrets(settings)
+        assert exc.value.exit_code == 7
 
     def test_secrets_file_missing(self, tmp_path: Path) -> None:
         settings = _settings(tmp_path / "nonexistent")

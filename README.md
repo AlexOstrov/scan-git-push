@@ -5,7 +5,7 @@ LLLM-powered analysis of git push changes for a configurable GitHub repository.
 ## Features
 
 - Analyzes commits from the last N days
-- Supports Ollama (local) and GitHub Models API (free tier) LLM providers
+- Supports Ollama (local) and Groq (online, free tier) LLM providers
 - Outputs to console (Rich), Markdown, and self-contained interactive HTML
 - Automatic diff chunking for large commits
 - Retry logic with exponential backoff
@@ -28,9 +28,11 @@ Edit `config.json`:
   "GIT_PROJECT": "https://github.com/owner/repo",
   "GIT_DAY": 7,
   "SECRETS_PATH": "d:\\projects\\fullstack-demo\\.secrets",
-  "LLM_PROVIDER": "ollama"
+  "LLM_PROVIDER": "groq"
 }
 ```
+
+Secrets file (`.secrets`) must contain `GITHUB_TOKEN` and `GROQ_API_KEY` (see `user-guide.html`).
 
 ## Usage
 

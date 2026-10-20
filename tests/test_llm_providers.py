@@ -6,8 +6,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import httpx
+
 from scan_git_push.llm.ollama import OllamaProvider
 from scan_git_push.llm.github_models import GitHubModelsProvider, KNOWN_GITHUB_MODELS
+from scan_git_push.llm.groq import GroqProvider, KNOWN_GROQ_MODELS
 from scan_git_push.llm.base import LLMResponse
 
 
@@ -16,6 +19,7 @@ def _mock_http_response(status_code: int, json_data=None):
     resp = MagicMock()
     resp.status_code = status_code
     resp.json.return_value = json_data
+    resp.raise_for_status.return_value = None
     return resp
 
 
@@ -81,24 +85,18 @@ class TestOllamaProvider:
 class TestGitHubModelsProvider:
     """Test GitHubModelsProvider class."""
 
-    @patch("openai.OpenAI")
-    def test_is_available_success(self, mock_openai_cls) -> None:
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_is_available_success(self, mock_post) -> None:
         """Test availability check when API is reachable."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.choices = [MagicMock()]
-        mock_client.chat.completions.create.return_value = mock_response
-        mock_openai_cls.return_value = mock_client
+        mock_post.return_value = _mock_http_response(200, {"choices": [{"x": 1}]})
 
         provider = GitHubModelsProvider(model="test-model", token="test-token")
         assert provider.is_available() is True
 
-    @patch("openai.OpenAI")
-    def test_is_available_failure(self, mock_openai_cls) -> None:
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_is_available_failure(self, mock_post) -> None:
         """Test availability check when API is not reachable."""
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.side_effect = Exception("Auth failed")
-        mock_openai_cls.return_value = mock_client
+        mock_post.side_effect = Exception("Auth failed")
 
         provider = GitHubModelsProvider(model="test-model", token="bad-token")
         assert provider.is_available() is False
@@ -108,14 +106,14 @@ class TestGitHubModelsProvider:
         provider = GitHubModelsProvider(model="test-model", token="")
         assert provider.is_available() is False
 
-    @patch("scan_git_push.llm.github_models.httpx.get")
+    @patch("scan_git_push.llm.openai_compatible.httpx.get")
     def test_list_models_from_endpoint(self, mock_get) -> None:
         """Test listing models parsed from the OpenAI-compatible endpoint."""
         mock_get.return_value = _mock_http_response(200, {"data": [{"id": "m1"}, {"id": "m2"}]})
         provider = GitHubModelsProvider(model="test-model", token="test-token")
         assert provider.list_models() == ["m1", "m2"]
 
-    @patch("scan_git_push.llm.github_models.httpx.get")
+    @patch("scan_git_push.llm.openai_compatible.httpx.get")
     def test_list_models_fallback(self, mock_get) -> None:
         """Test fallback to the curated list when the API is unreachable."""
         mock_get.side_effect = Exception("network down")
@@ -124,17 +122,16 @@ class TestGitHubModelsProvider:
         assert models == KNOWN_GITHUB_MODELS
         assert "gpt-4o-mini" in models
 
-    @patch("openai.OpenAI")
-    def test_generate(self, mock_openai_cls) -> None:
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_generate(self, mock_post) -> None:
         """Test generating a response via GitHub Models API."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_choice = MagicMock()
-        mock_choice.message.content = "Test response"
-        mock_response.choices = [mock_choice]
-        mock_response.usage = MagicMock(prompt_tokens=10, completion_tokens=5, total_tokens=15)
-        mock_client.chat.completions.create.return_value = mock_response
-        mock_openai_cls.return_value = mock_client
+        mock_post.return_value = _mock_http_response(
+            200,
+            {
+                "choices": [{"message": {"content": "Test response"}}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            },
+        )
 
         provider = GitHubModelsProvider(model="test-model", token="test-token")
         response = provider.generate("Test prompt")
@@ -144,3 +141,47 @@ class TestGitHubModelsProvider:
         assert response.model == "test-model"
         assert response.provider == "github_models"
         assert response.usage["total_tokens"] == 15
+
+
+class TestGroqProvider:
+    """Test GroqProvider class."""
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_is_available_success(self, mock_post) -> None:
+        """Test availability check when API is reachable."""
+        mock_post.return_value = _mock_http_response(200, {"choices": [{"x": 1}]})
+
+        provider = GroqProvider(model="llama-3.1-8b-instant", token="test-key")
+        assert provider.is_available() is True
+
+    def test_is_available_without_token(self) -> None:
+        """No token means the provider is not available."""
+        provider = GroqProvider(model="llama-3.1-8b-instant", token="")
+        assert provider.is_available() is False
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.get")
+    def test_list_models_fallback(self, mock_get) -> None:
+        """Test fallback to the curated list when the API is unreachable."""
+        mock_get.side_effect = Exception("network down")
+        provider = GroqProvider(model="llama-3.1-8b-instant", token="test-key")
+        models = provider.list_models()
+        assert models == KNOWN_GROQ_MODELS
+        assert "llama-3.3-70b-versatile" in models
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_generate(self, mock_post) -> None:
+        """Test generating a response via Groq."""
+        mock_post.return_value = _mock_http_response(
+            200,
+            {
+                "choices": [{"message": {"content": "Groq response"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            },
+        )
+
+        provider = GroqProvider(model="llama-3.1-8b-instant", token="test-key")
+        response = provider.generate("hi")
+
+        assert response.text == "Groq response"
+        assert response.provider == "groq"
+        assert response.usage["total_tokens"] == 5

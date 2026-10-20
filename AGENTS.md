@@ -11,8 +11,8 @@ python -m scan_git_push
 ```
 
 Requires:
-- Secrets file at `d:\projects\fullstack-demo\.secrets` with `GITHUB_TOKEN` (always) and `GITHUB_MODELS_TOKEN` (required when `LLM_PROVIDER=github_models`)
-- At least one LLM provider: Ollama at `http://localhost:11434` or GitHub Models API (`https://models.github.ai/inference`, needs internet)
+- Secrets file at `d:\projects\fullstack-demo\.secrets` with `GITHUB_TOKEN` (always) and `GROQ_API_KEY` (required when `LLM_PROVIDER=groq`)
+- At least one LLM provider: Ollama at `http://localhost:11434`, Groq (`https://api.groq.com/openai/v1`), or GitHub Models (retired 30.07.2026)
 
 Configuration: `config.json` (validated via Pydantic Settings).
 
@@ -24,9 +24,11 @@ scan_git_push/
 ├── config.py             # Pydantic Settings validation
 ├── github_client.py      # PyGithub + retry logic
 ├── llm/
-│   ├── base.py           # Provider abstraction
-│   ├── ollama.py         # Ollama SDK provider
-│   └── github_models.py  # OpenAI-compatible GitHub Models provider
+│   ├── base.py               # Provider abstraction
+│   ├── ollama.py             # Ollama SDK provider
+│   ├── openai_compatible.py # Generic OpenAI-compatible provider (httpx)
+│   ├── github_models.py      # GitHub Models (retired 30.07.2026)
+│   └── groq.py               # Groq (OpenAI-compatible)
 ├── analyzer.py           # Commit analysis + diff chunking
 ├── reporters/
 │   ├── console.py        # Rich console output
@@ -38,9 +40,9 @@ scan_git_push/
 
 ## Key Conventions
 
-- **LLM providers**: On startup both providers are probed best-effort; models from all available providers are offered in one interactive list (runtime switching). `LLM_PROVIDER` only sets the default and token requirement.
-- **Token validation**: `GITHUB_MODELS_TOKEN` is validated with a clear message and exit code 6 when `LLM_PROVIDER=github_models`; if absent and provider is `ollama`, GitHub Models is skipped gracefully.
-- **GitHub Models listing**: `GitHubModelsProvider` checks availability via a minimal chat request and falls back to a curated `KNOWN_GITHUB_MODELS` list because the inference endpoint does not expose a JSON `/models` listing.
+- **LLM providers**: On startup all providers are probed best-effort; models from all available providers are offered in one interactive list (runtime switching). `LLM_PROVIDER` only sets the default and token requirement.
+- **Token validation**: `GITHUB_MODELS_TOKEN` (exit code 6) and `GROQ_API_KEY` (exit code 7) are validated with a clear message when their provider is selected; if absent and provider is `ollama`, they are skipped gracefully.
+- **OpenAI-compatible providers**: Implemented via plain `httpx` (`OpenAICompatibleProvider`) — no `openai` SDK dependency. Availability uses a minimal chat request; model listing falls back to a curated list.
 - **Diff chunking**: Splits on file boundaries at 12 000 chars (`MAX_DIFF_CHARS_PER_CHUNK`); merges per-chunk summaries
 - **Retry policy**: 3 attempts, exponential backoff factor 2, 30 s HTTP timeout
 - **Merge commits**: Excluded from analysis
