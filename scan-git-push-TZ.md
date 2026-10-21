@@ -4,9 +4,9 @@
 
 ## 1. Цель проекта
 
-Разработать Python-утилиту, выполняющую анализ git push изменений указанного проекта за указанное количество дней. К анализу подключается LLM-модель (Ollama или Groq), проводящая анализ содержимого и выдающая результирующее саммари в консоль, Markdown и интерактивный HTML-отчёт.
+Разработать Python-утилиту, выполняющую анализ git push изменений указанного проекта за указанное количество дней. К анализу подключается LLM-модель (Ollama или Mistral AI), проводящая анализ содержимого и выдающая результирующее саммари в консоль, Markdown и интерактивный HTML-отчёт.
 
-> **Примечание (20.10.2026):** GitHub Models API закрыт 30.07.2026. В качестве онлайн-провайдера используется Groq (OpenAI-совместимый endpoint).
+> **Примечание (21.10.2026):** GitHub Models API закрыт 30.07.2026. Groq недоступен в РФ (403 Forbidden, обход запрещён §4.1 Terms of Use). В качестве онлайн-провайдера используется Mistral AI (OpenAI-совместимый endpoint).
 
 ---
 
@@ -17,7 +17,8 @@
 | Язык                  | Python 3.11+                           |
 | GitHub API            | `PyGithub`                             |
 | Ollama API            | `ollama` (Python SDK)                  |
-| Groq API             | `httpx` (OpenAI-совместимый endpoint)  |
+| Mistral API           | `httpx` (OpenAI-совместимый endpoint)  |
+| Groq API             | блокируется в РФ (403 Forbidden)       |
 | GitHub Models API     | закрыт 30.07.2026                       |
 | CLI-фреймворк         | `typer`                                |
 | Форматирование вывода | `rich` (консоль), `jinja2` (HTML)      |
@@ -35,13 +36,13 @@
   "GIT_PROJECT": "https://github.com/owner/repo",
   "GIT_DAY": 7,
   "SECRETS_PATH": "d:\\projects\\fullstack-demo\\.secrets",
-  "LLM_PROVIDER": "groq",
+  "LLM_PROVIDER": "mistral",
   "OLLAMA_BASE_URL": "http://localhost:11434",
   "OLLAMA_MODEL": "llama3.1:8b",
   "GH_MODELS_MODEL": "gpt-4o-mini",
   "GH_MODELS_ENDPOINT": "https://models.github.ai/inference",
-  "GROQ_MODEL": "llama-3.3-70b-versatile",
-  "GROQ_ENDPOINT": "https://api.groq.com/openai/v1",
+  "MISTRAL_MODEL": "mistral-small-latest",
+  "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1",
   "MAX_DIFF_CHARS_PER_CHUNK": 12000,
   "MAX_CHUNK_RETRIES": 3,
   "BACKOFF_FACTOR": 2,
@@ -62,15 +63,15 @@
 
 ```ini
 GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+MISTRAL_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ### 4.2 Проверки при запуске
 
 1. Проверить наличие и читаемость файла секретов.
 2. Проверить наличие `GITHUB_TOKEN` для доступа к GitHub API.
-3. Проверить наличие `GROQ_API_KEY` (если выбран провайдер Groq).
-4. Проверить доступность Ollama (`GET /api/tags`) и Groq (best-effort).
+3. Проверить наличие `MISTRAL_API_KEY` (если выбран провайдер Mistral).
+4. Проверить доступность Ollama (`GET /api/tags`) и Mistral AI (best-effort).
 
 ---
 
@@ -79,7 +80,7 @@ GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 При запуске утилиты:
 
 1. Определить доступные локальные модели Ollama (`ollama.list()`).
-2. Определить доступные модели Groq (best-effort, если есть ключ).
+2. Определить доступные модели Mistral AI (best-effort, если есть ключ).
 3. Вывести пользователю нумерованный список доступных моделей с указанием провайдера.
 4. Запросить у пользователя выбор модели (номер из списка или название).
 
@@ -93,10 +94,11 @@ GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 |----------|----------|
 | Файл секретов не найден | Вывести причину, завершить с кодом 1 |
 | `GITHUB_TOKEN` отсутствует/невалиден | Вывести причину, завершить с кодом 2 |
-| Нет доступных моделей (ни Ollama, ни Groq) | Вывести причину, завершить с кодом 3 |
+| Нет доступных моделей (ни Ollama, ни Mistral AI) | Вывести причину, завершить с кодом 3 |
 | Репозиторий не найден/нет доступа | Вывести причину, завершить с кодом 5 |
 | `GITHUB_MODELS_TOKEN` отсутствует (провайдер github_models) | Вывести причину, завершить с кодом 6 |
 | `GROQ_API_KEY` отсутствует (провайдер groq) | Вывести причину, завершить с кодом 7 |
+| `MISTRAL_API_KEY` отсутствует (провайдер mistral) | Вывести причину, завершить с кодом 8 |
 
 ### 6.2 Временные ошибки (retry с backoff)
 
@@ -240,7 +242,8 @@ scan-git-push/
 │   │   ├── base.py               # Абстракция провайдера
 │   │   ├── ollama.py             # Ollama провайдер
 │   │   ├── openai_compatible.py # OpenAI-совместимый провайдер (httpx)
-│   │   ├── groq.py               # Groq провайдер
+│   │   ├── mistral.py            # Mistral AI провайдер
+│   │   ├── groq.py               # Groq провайдер (недоступен в РФ)
 │   │   └── github_models.py      # GitHub Models провайдер (закрыт)
 │   ├── analyzer.py         # Логика анализа коммитов + chunking
 │   ├── reporters/

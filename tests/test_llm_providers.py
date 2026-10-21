@@ -11,6 +11,7 @@ import httpx
 from scan_git_push.llm.ollama import OllamaProvider
 from scan_git_push.llm.github_models import GitHubModelsProvider, KNOWN_GITHUB_MODELS
 from scan_git_push.llm.groq import GroqProvider, KNOWN_GROQ_MODELS
+from scan_git_push.llm.mistral import MistralProvider, KNOWN_MISTRAL_MODELS
 from scan_git_push.llm.base import LLMResponse
 
 
@@ -185,3 +186,47 @@ class TestGroqProvider:
         assert response.text == "Groq response"
         assert response.provider == "groq"
         assert response.usage["total_tokens"] == 5
+
+
+class TestMistralProvider:
+    """Test MistralProvider class."""
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_is_available_success(self, mock_post) -> None:
+        """Test availability check when API is reachable."""
+        mock_post.return_value = _mock_http_response(200, {"choices": [{"x": 1}]})
+
+        provider = MistralProvider(model="mistral-small-latest", token="test-key")
+        assert provider.is_available() is True
+
+    def test_is_available_without_token(self) -> None:
+        """No token means the provider is not available."""
+        provider = MistralProvider(model="mistral-small-latest", token="")
+        assert provider.is_available() is False
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.get")
+    def test_list_models_fallback(self, mock_get) -> None:
+        """Test fallback to the curated list when the API is unreachable."""
+        mock_get.side_effect = Exception("network down")
+        provider = MistralProvider(model="mistral-small-latest", token="test-key")
+        models = provider.list_models()
+        assert models == KNOWN_MISTRAL_MODELS
+        assert "mistral-small-latest" in models
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_generate(self, mock_post) -> None:
+        """Test generating a response via Mistral."""
+        mock_post.return_value = _mock_http_response(
+            200,
+            {
+                "choices": [{"message": {"content": "Mistral response"}}],
+                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+            },
+        )
+
+        provider = MistralProvider(model="mistral-small-latest", token="test-key")
+        response = provider.generate("hi")
+
+        assert response.text == "Mistral response"
+        assert response.provider == "mistral"
+        assert response.usage["total_tokens"] == 6

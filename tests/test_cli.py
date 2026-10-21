@@ -11,6 +11,7 @@ from scan_git_push.cli import (
     _check_secrets,
     _require_github_models_token,
     _require_groq_token,
+    _require_mistral_token,
     _try_github_models_token,
 )
 from scan_git_push.config import Settings
@@ -82,6 +83,32 @@ class TestRequireGroqToken:
         assert exc.value.exit_code == 7
 
 
+class TestRequireMistralToken:
+    """Test _require_mistral_token."""
+
+    def test_token_present(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=m\n", encoding="utf-8")
+        settings = _settings(secrets)
+        assert _require_mistral_token(settings) == "m"
+
+    def test_token_missing(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
+        settings = _settings(secrets)
+        with pytest.raises(typer.Exit) as exc:
+            _require_mistral_token(settings)
+        assert exc.value.exit_code == 8
+
+    def test_token_empty(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=\n", encoding="utf-8")
+        settings = _settings(secrets)
+        with pytest.raises(typer.Exit) as exc:
+            _require_mistral_token(settings)
+        assert exc.value.exit_code == 8
+
+
 class TestTryGitHubModelsToken:
     """Test _try_github_models_token (best effort)."""
 
@@ -131,6 +158,14 @@ class TestCheckSecrets:
         with pytest.raises(typer.Exit) as exc:
             _check_secrets(settings)
         assert exc.value.exit_code == 7
+
+    def test_mistral_provider_requires_token(self, tmp_path: Path) -> None:
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
+        settings = _settings(secrets, llm_provider="mistral")
+        with pytest.raises(typer.Exit) as exc:
+            _check_secrets(settings)
+        assert exc.value.exit_code == 8
 
     def test_secrets_file_missing(self, tmp_path: Path) -> None:
         settings = _settings(tmp_path / "nonexistent")

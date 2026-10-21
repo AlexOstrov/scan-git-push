@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     # LLM provider selection
-    llm_provider: Literal["ollama", "github_models", "groq"] = Field(
+    llm_provider: Literal["ollama", "github_models", "groq", "mistral"] = Field(
         default="ollama",
         alias="LLM_PROVIDER",
     )
@@ -59,6 +59,16 @@ class Settings(BaseSettings):
     groq_endpoint: str = Field(
         default="https://api.groq.com/openai/v1",
         alias="GROQ_ENDPOINT",
+    )
+
+    # Mistral settings
+    mistral_model: str = Field(
+        default="mistral-small-latest",
+        alias="MISTRAL_MODEL",
+    )
+    mistral_endpoint: str = Field(
+        default="https://api.mistral.ai/v1",
+        alias="MISTRAL_ENDPOINT",
     )
 
     # Analysis settings
@@ -97,6 +107,11 @@ class Settings(BaseSettings):
     def groq_api_key(self) -> str:
         """Read Groq API key from secrets file."""
         return self._read_secret("GROQ_API_KEY")
+
+    @property
+    def mistral_api_key(self) -> str:
+        """Read Mistral API key from secrets file."""
+        return self._read_secret("MISTRAL_API_KEY")
 
     def _read_secret(self, key: str) -> str:
         """Read a secret value from the secrets file."""

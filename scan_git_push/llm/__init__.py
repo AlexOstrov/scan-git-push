@@ -5,6 +5,7 @@ from scan_git_push.llm.openai_compatible import OpenAICompatibleProvider
 from scan_git_push.llm.ollama import OllamaProvider
 from scan_git_push.llm.github_models import GitHubModelsProvider
 from scan_git_push.llm.groq import GroqProvider
+from scan_git_push.llm.mistral import MistralProvider
 
 __all__ = [
     "LLMProvider",
@@ -13,4 +14,5 @@ __all__ = [
     "OllamaProvider",
     "GitHubModelsProvider",
     "GroqProvider",
+    "MistralProvider",
 ]

@@ -171,12 +171,12 @@ tr:hover { background: var(--bg-secondary); }
 </div>
 
 <h2 id="overview">1. Обзор</h2>
-<p><code>scan-git-push</code> — утилита для анализа коммитов GitHub-репозитория за указанный период. Использует LLM (Ollama или GitHub Models API) для генерации саммари каждого коммита.</p>
+<p><code>scan-git-push</code> — утилита для анализа коммитов GitHub-репозитория за указанный период. Использует LLM (Ollama, Mistral AI или GitHub Models) для генерации саммари каждого коммита.</p>
 
 <table>
   <tr><th>Характеристика</th><th>Описание</th></tr>
   <tr><td>Язык</td><td>Python 3.11+</td></tr>
-  <tr><td>LLM провайдеры</td><td><span class="badge badge-green">Ollama</span><span class="badge badge-blue">Groq</span><span class="badge badge-yellow">GitHub Models (retired)</span></td></tr>
+  <tr><td>LLM провайдеры</td><td><span class="badge badge-green">Ollama</span><span class="badge badge-blue">Mistral AI</span><span class="badge badge-yellow">Groq / GitHub Models (недоступны в РФ)</span></td></tr>
   <tr><td>Форматы вывода</td><td><span class="badge badge-green">Консоль</span><span class="badge badge-blue">Markdown</span><span class="badge badge-yellow">HTML</span></td></tr>
   <tr><td>Анализируемый период</td><td>1–365 дней (настраивается)</td></tr>
 </table>
@@ -192,16 +192,16 @@ tr:hover { background: var(--bg-secondary); }
   <span class="badge badge-green">Обязательно</span> <strong>Файл секретов</strong> <code>d:\projects\fullstack-demo\.secrets</code>
   <p style="margin-top:8px; margin-bottom:0;">Формат файла:</p>
   <pre><code>GITHUB_TOKEN=ghp_ваш_токен_github
-GROQ_API_KEY=gsk_ваш_ключ_groq</code></pre>
-  <p style="margin-top:8px; margin-bottom:0;"><em><code>GITHUB_TOKEN</code> нужен для чтения репозитория. <code>GROQ_API_KEY</code> — для Groq (получите на <code>console.groq.com/keys</code>).</em></p>
+MISTRAL_API_KEY=ключ_из_console.mistral.ai</code></pre>
+  <p style="margin-top:8px; margin-bottom:0;"><em><code>GITHUB_TOKEN</code> нужен для чтения репозитория. <code>MISTRAL_API_KEY</code> — для Mistral AI (получите на <code>console.mistral.ai</code>).</em></p>
 </div>
 
 <div class="prereq-box ok">
   <span class="badge badge-green">Обязательно</span> <strong>Хотя бы один LLM-провайдер:</strong>
   <ul style="margin-top:8px; padding-left:20px;">
-    <li><strong>Groq</strong> — онлайн, OpenAI-совместимый API, есть бесплатный тариф (требуется <code>GROQ_API_KEY</code>)</li>
+    <li><strong>Mistral AI</strong> — онлайн, OpenAI-совместимый API, есть бесплатный тариф (требуется <code>MISTRAL_API_KEY</code>)</li>
     <li><strong>Ollama</strong> — запущена локально на <code>http://localhost:11434</code> с установленной моделью</li>
-    <li><strong>GitHub Models API</strong> — <em>закрыт 30.07.2026</em>, больше недоступен</li>
+    <li><strong>Groq / GitHub Models</strong> — заблокированы в РФ (Groq: 403 Forbidden, GitHub Models: закрыт 30.07.2026)</li>
   </ul>
 </div>
 
@@ -235,13 +235,15 @@ source .venv/bin/activate</code></pre>
   "GIT_PROJECT": "https://github.com/AlexOstrov/fullstack-demo.git",
   "GIT_DAY": 7,
   "SECRETS_PATH": "d:\\projects\\fullstack-demo\\.secrets",
-  "LLM_PROVIDER": "github_models",
+  "LLM_PROVIDER": "mistral",
   "OLLAMA_BASE_URL": "http://localhost:11434",
   "OLLAMA_MODEL": "llama3.1:8b",
   "GH_MODELS_MODEL": "gpt-4o-mini",
   "GH_MODELS_ENDPOINT": "https://models.github.ai/inference",
   "GROQ_MODEL": "llama-3.3-70b-versatile",
-  "GROQ_ENDPOINT": "https://api.groq.com/openai/v1"
+  "GROQ_ENDPOINT": "https://api.groq.com/openai/v1",
+  "MISTRAL_MODEL": "mistral-small-latest",
+  "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1"
 }</code></pre>
 
 <div class="note">
@@ -254,23 +256,25 @@ source .venv/bin/activate</code></pre>
   <tr><td><code>GIT_PROJECT</code></td><td>URL GitHub-репозитория</td><td>—</td></tr>
   <tr><td><code>GIT_DAY</code></td><td>Количество дней для анализа (1–365)</td><td>7</td></tr>
   <tr><td><code>SECRETS_PATH</code></td><td>Путь к файлу с токенами</td><td><code>d:\projects\fullstack-demo\.secrets</code></td></tr>
-  <tr><td><code>LLM_PROVIDER</code></td><td>Провайдер по умолчанию: <code>ollama</code>, <code>groq</code> или <code>github_models</code></td><td><code>ollama</code></td></tr>
+  <tr><td><code>LLM_PROVIDER</code></td><td>Провайдер по умолчанию: <code>ollama</code>, <code>groq</code>, <code>mistral</code> или <code>github_models</code></td><td><code>ollama</code></td></tr>
   <tr><td><code>OLLAMA_MODEL</code></td><td>Модель Ollama для анализа</td><td><code>llama3.1:8b</code></td></tr>
   <tr><td><code>GH_MODELS_MODEL</code></td><td>Модель GitHub Models API (сервис закрыт)</td><td><code>gpt-4o-mini</code></td></tr>
   <tr><td><code>GROQ_MODEL</code></td><td>Модель Groq</td><td><code>llama-3.3-70b-versatile</code></td></tr>
   <tr><td><code>GROQ_ENDPOINT</code></td><td>Endpoint Groq API</td><td><code>https://api.groq.com/openai/v1</code></td></tr>
+  <tr><td><code>MISTRAL_MODEL</code></td><td>Модель Mistral AI</td><td><code>mistral-small-latest</code></td></tr>
+  <tr><td><code>MISTRAL_ENDPOINT</code></td><td>Endpoint Mistral AI</td><td><code>https://api.mistral.ai/v1</code></td></tr>
 </table>
 
-<h3>Настройка Groq (онлайн-модель)</h3>
+<h3>Настройка Mistral AI (онлайн-модель)</h3>
 <ol style="padding-left:20px;">
-  <li>Зарегистрируйтесь на <code>console.groq.com</code> и создайте API-ключ в разделе <em>API Keys</em></li>
-  <li>Добавьте ключ в <code>.secrets</code>: <code>GROQ_API_KEY=gsk_...</code></li>
-  <li>Установите <code>LLM_PROVIDER</code> в <code>groq</code> (или оставьте <code>ollama</code> и выберите модель Groq в меню)</li>
-  <li>Запустите утилиту и выберите модель из списка <em>[Groq]</em></li>
+  <li>Зарегистрируйтесь на <code>console.mistral.ai</code> и создайте API-ключ в разделе <em>API Keys</em></li>
+  <li>Добавьте ключ в <code>.secrets</code>: <code>MISTRAL_API_KEY=...</code></li>
+  <li>Установите <code>LLM_PROVIDER</code> в <code>mistral</code> (или оставьте <code>ollama</code> и выберите модель Mistral в меню)</li>
+  <li>Запустите утилиту и выберите модель из списка <em>[Mistral]</em></li>
 </ol>
 <div class="warning">
-  <div class="warning-title">Лимиты бесплатного тарифа Groq</div>
-  <p style="margin-bottom:0;">Бесплатный тариф Groq имеет ограничения на количество запросов в минуту/день. При исчерпании лимита запросы возвращают ошибку — дождитесь сброса или выберите модель Ollama. Требуется интернет-соединение.</p>
+  <div class="warning-title">Лимиты бесплатного тарифа Mistral AI</div>
+  <p style="margin-bottom:0;">Бесплатный тариф Mistral AI имеет ограничения на количество запросов в минуту/день. При исчерпании лимита запросы возвращают ошибку — дождитесь сброса или выберите модель Ollama. Требуется интернет-соединение.</p>
 </div>
 
 <h2 id="usage">5. Запуск</h2>
@@ -285,7 +289,7 @@ source .venv/bin/activate</code></pre>
 <h3>Процесс работы</h3>
 <ol style="padding-left:20px; margin-top:8px;">
   <li>Утилита загружает конфигурацию и проверяет секреты</li>
-  <li>Опрашивает Ollama и GitHub Models API (best-effort)</li>
+  <li>Опрашивает Ollama и Mistral AI API (best-effort)</li>
   <li>Собирает список моделей от всех доступных провайдеров</li>
   <li><strong>Запрашивает у пользователя выбор модели</strong> (нумерованный список — можно переключиться между провайдерами на лету)</li>
   <li>Получает коммиты из репозитория за указанный период</li>
@@ -334,8 +338,8 @@ source .venv/bin/activate</code></pre>
   </tr>
   <tr>
     <td><code>Exit code: 3</code><br>No LLM models available</td>
-    <td>Ни Ollama, ни GitHub Models API не предоставили модели</td>
-    <td>Запустите Ollama или проверьте <code>GITHUB_MODELS_TOKEN</code> и интернет-соединение</td>
+    <td>Ни Ollama, ни Mistral AI API не предоставили модели</td>
+    <td>Запустите Ollama или проверьте <code>MISTRAL_API_KEY</code> и интернет-соединение</td>
   </tr>
   <tr>
     <td><code>Exit code: 5</code><br>Repository not found</td>
@@ -345,12 +349,17 @@ source .venv/bin/activate</code></pre>
   <tr>
     <td><code>Exit code: 6</code><br>GITHUB_MODELS_TOKEN missing</td>
     <td>Токен отсутствует или пуст (при <code>LLM_PROVIDER=github_models</code>). Сервис GitHub Models закрыт 30.07.2026</td>
-    <td>Используйте Groq вместо GitHub Models</td>
+    <td>Используйте Mistral AI вместо GitHub Models</td>
   </tr>
   <tr>
     <td><code>Exit code: 7</code><br>GROQ_API_KEY missing</td>
     <td>Ключ отсутствует или пуст в файле секретов (при <code>LLM_PROVIDER=groq</code>)</td>
     <td>Добавьте в <code>.secrets</code>: <code>GROQ_API_KEY=gsk_...</code></td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 8</code><br>MISTRAL_API_KEY missing</td>
+    <td>Ключ отсутствует или пуст в файле секретов (при <code>LLM_PROVIDER=mistral</code>)</td>
+    <td>Добавьте в <code>.secrets</code>: <code>MISTRAL_API_KEY=...</code></td>
   </tr>
   <tr>
     <td><code>BadCredentialsException: 401</code></td>
@@ -391,7 +400,7 @@ ollama pull llama3.1:8b</code></pre>
 
 <h3>Пример файла секретов</h3>
 <pre><code>GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
+MISTRAL_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
 
 <div class="note">
   <div class="note-title">Безопасность</div>
@@ -399,7 +408,7 @@ GROQ_API_KEY=gsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
 </div>
 
 <div class="footer">
-  scan-git-push v0.1.0 · LLM-powered git commit analysis · Generated 2026-10-20
+  scan-git-push v0.1.0 · LLM-powered git commit analysis · Generated 2026-10-21
 </div>
 
 </div>

@@ -17,6 +17,7 @@ from scan_git_push.github_client import GitHubClient
 from scan_git_push.llm.ollama import OllamaProvider
 from scan_git_push.llm.github_models import GitHubModelsProvider
 from scan_git_push.llm.groq import GroqProvider
+from scan_git_push.llm.mistral import MistralProvider
 from scan_git_push.memory.manager import MemoryManager
 from scan_git_push.reporters.console import ConsoleReporter
 from scan_git_push.reporters.markdown import MarkdownReporter
@@ -56,6 +57,8 @@ def _check_secrets(settings: Settings) -> None:
         _require_github_models_token(settings)
     elif settings.llm_provider == "groq":
         _require_groq_token(settings)
+    elif settings.llm_provider == "mistral":
+        _require_mistral_token(settings)
 
 
 def _require_github_models_token(settings: Settings) -> str:
@@ -118,10 +121,41 @@ def _try_groq_token(settings: Settings) -> str | None:
         return None
 
 
+def _require_mistral_token(settings: Settings) -> str:
+    """Validate that MISTRAL_API_KEY exists and is non-empty.
+
+    Returns the token on success, or exits with a clear error (code 8).
+    """
+    try:
+        token = settings.mistral_api_key
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        console.print(
+            f"[red]Error: MISTRAL_API_KEY is missing from the secrets file "
+            f"({settings.secrets_path}).\n"
+            f"Add it as: MISTRAL_API_KEY=<your_mistral_key>[/red]"
+        )
+        raise typer.Exit(code=8) from exc
+
+    if not token:
+        console.print("[red]Error: MISTRAL_API_KEY is empty in the secrets file.[/red]")
+        raise typer.Exit(code=8)
+
+    return token
+
+
+def _try_mistral_token(settings: Settings) -> str | None:
+    """Return MISTRAL_API_KEY if present, otherwise None (best effort)."""
+    try:
+        return settings.mistral_api_key or None
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
+
+
 def _prompt_model_selection(
     ollama_models: list[str],
     gh_models: list[str],
     groq_models: list[str] | None = None,
+    mistral_models: list[str] | None = None,
 ) -> tuple[str, str]:
     """Prompt user to select a model. Returns (provider, model_name)."""
     console.print("\n[bold cyan]Available LLM models:[/bold cyan]\n")
@@ -134,6 +168,8 @@ def _prompt_model_selection(
         options.append(("github_models", m, f"[GitHub Models] {m}"))
     for m in groq_models or []:
         options.append(("groq", m, f"[Groq] {m}"))
+    for m in mistral_models or []:
+        options.append(("mistral", m, f"[Mistral] {m}"))
 
     if not options:
         console.print("[red]Error: No models available from any provider.[/red]")
@@ -240,13 +276,36 @@ def main(
     else:
         console.print("  [dim]Groq[/dim] skipped (no GROQ_API_KEY)")
 
-    if not ollama_models and not gh_models and not groq_models:
+    # Mistral — token required when selected via config, optional otherwise.
+    mistral_models: list[str] = []
+    if settings.llm_provider == "mistral":
+        mistral_token = _require_mistral_token(settings)
+    else:
+        mistral_token = _try_mistral_token(settings)
+
+    if mistral_token:
+        mistral_provider = MistralProvider(
+            model=settings.mistral_model,
+            endpoint=settings.mistral_endpoint,
+            token=mistral_token,
+        )
+        if mistral_provider.is_available():
+            mistral_models = mistral_provider.list_models()
+            console.print(
+                f"  [green]Mistral[/green] available ({len(mistral_models)} model(s))"
+            )
+        else:
+            console.print("  [dim]Mistral[/dim] not reachable — skipped")
+    else:
+        console.print("  [dim]Mistral[/dim] skipped (no MISTRAL_API_KEY)")
+
+    if not ollama_models and not gh_models and not groq_models and not mistral_models:
         console.print("[red]Error: No LLM models available from any provider.[/red]")
         raise typer.Exit(code=3)
 
     # Model selection (provider is chosen here, at runtime)
     provider_name, model_name = _prompt_model_selection(
-        ollama_models, gh_models, groq_models
+        ollama_models, gh_models, groq_models, mistral_models
     )
     console.print(f"\n  Selected: [bold]{provider_name}[/bold] / [bold]{model_name}[/bold]\n")
 
@@ -266,11 +325,19 @@ def main(
             max_retries=settings.max_retries,
             backoff_factor=settings.backoff_factor,
         )
-    else:
+    elif provider_name == "groq":
         llm = GroqProvider(
             model=model_name,
             endpoint=settings.groq_endpoint,
             token=settings.groq_api_key,
+            max_retries=settings.max_retries,
+            backoff_factor=settings.backoff_factor,
+        )
+    else:
+        llm = MistralProvider(
+            model=model_name,
+            endpoint=settings.mistral_endpoint,
+            token=settings.mistral_api_key,
             max_retries=settings.max_retries,
             backoff_factor=settings.backoff_factor,
         )
