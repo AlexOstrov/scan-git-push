@@ -62,7 +62,13 @@ class OpenAICompatibleProvider(LLMProvider):
         return resp.json()
 
     def is_available(self) -> bool:
-        """Check reachability and token validity with a minimal chat request."""
+        """Check reachability and token validity with a minimal chat request.
+
+        Returns True when the provider is reachable, including when it is
+        temporarily rate-limited (HTTP 429). The latter lets the model appear
+        in the interactive list so the user can select it; generation then
+        relies on the built-in retry-with-backoff logic.
+        """
         if not self.token:
             logger.warning(f"{self.PROVIDER_NAME}: no token provided")
             return False
@@ -71,6 +77,15 @@ class OpenAICompatibleProvider(LLMProvider):
                 [{"role": "user", "content": "hi"}], max_tokens=1
             )
             return bool(data.get("choices"))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                logger.warning(
+                    f"{self.PROVIDER_NAME} API rate-limited (HTTP 429) — "
+                    f"provider is available but busy"
+                )
+                return True
+            logger.warning(f"{self.PROVIDER_NAME} API not available: {exc}")
+            return False
         except Exception as exc:
             logger.warning(f"{self.PROVIDER_NAME} API not available: {exc}")
             return False

@@ -26,6 +26,7 @@
 - Базовый OpenAI-совместимый провайдер на httpx (llm/openai_compatible.py)
 - Groq-провайдер (llm/groq.py) с валидацией GROQ_API_KEY (exit code 7)
 - Mistral AI-провайдер (llm/mistral.py) с валидацией MISTRAL_API_KEY (exit code 8)
+- Улучшена обработка HTTP 429 (rate limit): is_available() возвращает True при 429, модель показывается в списке, génération повторяется через retry с backoff
 - GitHub Models признан устаревшим (закрыт 30.07.2026), провайдер сохранён для совместимости
 - Groq недоступен в РФ (403 Forbidden, обход запрещён §4.1 Terms of Use) → замена на Mistral AI
 

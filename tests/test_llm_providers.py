@@ -19,8 +19,18 @@ def _mock_http_response(status_code: int, json_data=None):
     """Create a mock httpx.Response."""
     resp = MagicMock()
     resp.status_code = status_code
-    resp.json.return_value = json_data
+    resp.json.return_value = json_data or {}
     resp.raise_for_status.return_value = None
+    return resp
+
+
+def _mock_http_error(status_code: int):
+    """Create a mock httpx.Response that raises HTTPStatusError on raise_for_status."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    resp.json.return_value = {}
+    exc = httpx.HTTPStatusError(f"HTTP {status_code}", request=MagicMock(), response=resp)
+    resp.raise_for_status.side_effect = exc
     return resp
 
 
@@ -203,6 +213,13 @@ class TestMistralProvider:
         """No token means the provider is not available."""
         provider = MistralProvider(model="mistral-small-latest", token="")
         assert provider.is_available() is False
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_is_available_rate_limited(self, mock_post) -> None:
+        """429 means provider is reachable but busy — still available."""
+        mock_post.return_value = _mock_http_error(429)
+        provider = MistralProvider(model="mistral-small-latest", token="test-key")
+        assert provider.is_available() is True
 
     @patch("scan_git_push.llm.openai_compatible.httpx.get")
     def test_list_models_fallback(self, mock_get) -> None:
