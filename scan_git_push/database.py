@@ -44,6 +44,8 @@ class DatabaseManager:
                     analyzed_at TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'success',
                     summary TEXT,
+                    author TEXT,
+                    message TEXT,
                     files_count INTEGER DEFAULT 0,
                     chunks_count INTEGER DEFAULT 0,
                     PRIMARY KEY (sha, repo_url)
@@ -68,6 +70,16 @@ class DatabaseManager:
                     ON commit_files(repo_url);
                 """
             )
+            # Migration: add author/message columns to existing databases
+            for column_sql in [
+                "ALTER TABLE analyzed_commits ADD COLUMN author TEXT",
+                "ALTER TABLE analyzed_commits ADD COLUMN message TEXT",
+            ]:
+                try:
+                    conn.execute(column_sql)
+                except sqlite3.OperationalError:
+                    # Column already exists — ignore
+                    pass
             conn.commit()
         logger.info("Database initialized at %s", self.db_path)
 
@@ -108,14 +120,16 @@ class DatabaseManager:
         files: list,
         chunks_count: int,
         status: str = "success",
+        author: str = "",
+        message: str = "",
     ) -> None:
         """Save a single commit analysis to the database."""
         with self._get_connection() as conn:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO analyzed_commits
-                (sha, repo_url, analyzed_at, status, summary, files_count, chunks_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (sha, repo_url, analyzed_at, status, summary, author, message, files_count, chunks_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     commit_sha,
@@ -123,6 +137,8 @@ class DatabaseManager:
                     analyzed_at.isoformat(),
                     status,
                     summary,
+                    author,
+                    message,
                     len(files),
                     chunks_count,
                 ),
@@ -159,7 +175,7 @@ class DatabaseManager:
         with self._get_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT sha, analyzed_at, status, summary, files_count, chunks_count
+                SELECT sha, analyzed_at, status, summary, author, message, files_count, chunks_count
                 FROM analyzed_commits
                 WHERE repo_url = ? AND analyzed_at >= ?
                 ORDER BY analyzed_at DESC

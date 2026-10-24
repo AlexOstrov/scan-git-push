@@ -111,6 +111,8 @@ class TestDatabaseManager:
             summary="Test summary",
             files=sample_commit.files,
             chunks_count=1,
+            author=sample_commit.author,
+            message=sample_commit.message,
         )
 
         files = temp_db.get_commit_files(sample_commit.sha, "https://github.com/o/r")
@@ -119,6 +121,41 @@ class TestDatabaseManager:
         assert files[0]["file_status"] == "modified"
         assert files[0]["additions"] == 10
         assert files[0]["deletions"] == 5
+
+    def test_save_with_author_and_message(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
+        """Test saving commit with author and message fields."""
+        temp_db.save_commit_analysis(
+            commit_sha=sample_commit.sha,
+            repo_url="https://github.com/o/r",
+            analyzed_at=sample_commit.date,
+            summary="Test summary",
+            files=sample_commit.files,
+            chunks_count=1,
+            author=sample_commit.author,
+            message=sample_commit.message,
+        )
+
+        analyses = temp_db.get_recent_analyses("https://github.com/o/r", days=7)
+        assert len(analyses) == 1
+        assert analyses[0]["author"] == "testuser"
+        assert analyses[0]["message"] == "Test commit message"
+
+    def test_get_recent_analyses_includes_author_message(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
+        """Test that get_recent_analyses returns author and message."""
+        temp_db.save_commit_analysis(
+            commit_sha=sample_commit.sha,
+            repo_url="https://github.com/o/r",
+            analyzed_at=sample_commit.date,
+            summary="Test summary",
+            files=sample_commit.files,
+            chunks_count=1,
+            author=sample_commit.author,
+            message=sample_commit.message,
+        )
+
+        analyses = temp_db.get_recent_analyses("https://github.com/o/r", days=7)
+        assert analyses[0]["author"] == "testuser"
+        assert analyses[0]["message"] == "Test commit message"
 
     def test_cleanup_old_records(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
         """Test cleanup of old records."""

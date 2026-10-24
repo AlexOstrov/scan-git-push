@@ -246,7 +246,7 @@ source .venv/bin/activate</code></pre>
   "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1",
   "DB_PATH": "db/",
   "DB_RETENTION_DAYS": 60
-}</code></pre>
+}</code></pre></code></pre>
 
 <div class="note">
   <div class="note-title">Переключение провайдера на лету</div>
@@ -268,8 +268,6 @@ source .venv/bin/activate</code></pre>
   <tr><td><code>DB_PATH</code></td><td>Каталог для базы данных анализа коммитов</td><td><code>db/</code></td></tr>
   <tr><td><code>DB_RETENTION_DAYS</code></td><td>Срок хранения записей в БД (дней)</td><td>60</td></tr>
 </table>
-
-<h3>Настройка Mistral AI (онлайн-модель)</h3>
 <ol style="padding-left:20px;">
   <li>Зарегистрируйтесь на <code>console.mistral.ai</code> и создайте API-ключ в разделе <em>API Keys</em></li>
   <li>Добавьте ключ в <code>.secrets</code>: <code>MISTRAL_API_KEY=...</code></li>
@@ -310,6 +308,15 @@ source .venv/bin/activate</code></pre>
   <div class="note-title">Дедупликация коммитов (база данных)</div>
   <p style="margin-bottom:0;">При каждом запуске утилита проверяет уже проанализированные коммиты в SQLite-базе (<code>db/</code>). Коммиты, которые были проанализированы ранее, не анализируются повторно — это предотвращает дублирование при ежедневных запусках. Записи старше <code>DB_RETENTION_DAYS</code> (по умолчанию 60 дней) автоматически удаляются из базы.</p>
 </div>
+
+<h3>Генерация отчёта из базы данных (без LLM)</h3>
+<p>Команда <code>report-from-db</code> позволяет сгенерировать отчёты (консоль, Markdown, HTML) из уже сохранённых в БД данных, без вызова LLM:</p>
+<pre><code>python -m scan_git_push report-from-db --days 7</code></pre>
+<ul style="padding-left:20px;">
+  <li><code>--config</code> / <code>-c</code> — путь к config.json</li>
+  <li><code>--days</code> / <code>-d</code> — период в днях (переопределяет GIT_DAY)</li>
+</ul>
+<p>Это полезно, когда нужно повторно сформировать отчёт за предыдущие периоды, не тратя лимиты LLM.</p>
 
 <h2 id="output">6. Результаты</h2>
 
@@ -422,7 +429,7 @@ MISTRAL_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
 </div>
 
 <div class="footer">
-  scan-git-push v0.1.0 · LLM-powered git commit analysis · Generated 2026-10-21
+  scan-git-push v0.1.0 · LLM-powered git commit analysis · Generated 2026-10-24
 </div>
 
 </div>

@@ -46,6 +46,7 @@ scan_git_push/
 - **OpenAI-compatible providers**: Implemented via plain `httpx` (`OpenAICompatibleProvider`) — no `openai` SDK dependency. Availability uses a minimal chat request; model listing falls back to a curated list.
 - **Region restrictions**: Groq and GitHub Models are geo-blocked in some regions (incl. RF). Mistral AI is used as the online provider.
 - **Database**: SQLite (`db/`) — stores analyzed commit SHA, summary, files, chunks; deduplicates on re-run; cleanup records older than 60 days
+- **CLI commands**: `main` (analyze with LLM), `report-from-db` (generate report from DB without LLM)
 - **Diff chunking**: Splits on file boundaries at 12 000 chars (`MAX_DIFF_CHARS_PER_CHUNK`); merges per-chunk summaries
 - **Retry policy**: 3 attempts, exponential backoff factor 2, 30 s HTTP timeout
 - **Merge commits**: Excluded from analysis

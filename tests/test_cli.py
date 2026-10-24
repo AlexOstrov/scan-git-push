@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
+from scan_git_push.cli import app
 from scan_git_push.cli import (
     _check_secrets,
     _require_github_models_token,
@@ -15,6 +18,8 @@ from scan_git_push.cli import (
     _try_github_models_token,
 )
 from scan_git_push.config import Settings
+from scan_git_push.database import DatabaseManager
+from scan_git_push.github_client import CommitData, FileChange
 
 
 def _settings(secrets_path: Path, llm_provider: str = "github_models") -> Settings:
@@ -172,3 +177,148 @@ class TestCheckSecrets:
         with pytest.raises(typer.Exit) as exc:
             _check_secrets(settings)
         assert exc.value.exit_code == 1
+
+
+class TestReportFromDb:
+    """Test report-from-db command."""
+
+    def test_report_from_db_empty(self, tmp_path: Path) -> None:
+        """Test report-from-db with empty database."""
+        db_dir = tmp_path / "db"
+        db = DatabaseManager(db_dir)
+        db.initialize()
+
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=m\n", encoding="utf-8")
+        config = tmp_path / "config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "GIT_PROJECT": "https://github.com/o/r",
+                    "SECRETS_PATH": str(secrets),
+                    "DB_PATH": str(db_dir),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["report-from-db", "--config", str(config), "--days", "7"])
+        assert result.exit_code == 0
+        assert "No analyzed commits found in database" in result.output
+
+    def test_report_from_db_with_data(self, tmp_path: Path) -> None:
+        """Test report-from-db with data in database."""
+        db_dir = tmp_path / "db"
+        db = DatabaseManager(db_dir)
+        db.initialize()
+
+        # Save a commit to DB
+        from datetime import datetime, timezone
+
+        commit_date = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        db.save_commit_analysis(
+            commit_sha="abc123",
+            repo_url="https://github.com/o/r",
+            analyzed_at=commit_date,
+            summary="Test summary",
+            files=[
+                FileChange(
+                    filename="test.py",
+                    status="modified",
+                    additions=5,
+                    deletions=2,
+                    patch="",
+                ),
+            ],
+            chunks_count=1,
+            author="testuser",
+            message="Test commit",
+        )
+
+        secrets = tmp_path / ".secrets"
+        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=m\n", encoding="utf-8")
+        config = tmp_path / "config.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "GIT_PROJECT": "https://github.com/o/r",
+                    "SECRETS_PATH": str(secrets),
+                    "DB_PATH": str(db_dir),
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["report-from-db", "--config", str(config), "--days", "7"])
+        assert result.exit_code == 0
+        assert "abc123" in result.output
+        assert "testuser" in result.output
+        assert "Test summary" in result.output
+        assert "test.py" in result.output
+
+
+class TestDatabaseMigration:
+    """Test database migration for existing databases without author/message columns."""
+
+    def test_migration_adds_columns(self, tmp_path: Path) -> None:
+        """Test that existing database gets author/message columns added."""
+        import sqlite3
+
+        db_dir = tmp_path / "db"
+        db_dir.mkdir(parents=True, exist_ok=True)
+        db_path = db_dir / "analysis.db"
+
+        # Create old schema without author/message
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE analyzed_commits (
+                sha TEXT NOT NULL,
+                repo_url TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'success',
+                summary TEXT,
+                files_count INTEGER DEFAULT 0,
+                chunks_count INTEGER DEFAULT 0,
+                PRIMARY KEY (sha, repo_url)
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # Initialize should add columns without error
+        db = DatabaseManager(db_dir)
+        db.initialize()
+
+        # Should be able to save with author/message
+        from scan_git_push.github_client import CommitData, FileChange
+        from datetime import datetime, timezone
+
+        commit_date = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
+        db.save_commit_analysis(
+            commit_sha="abc123",
+            repo_url="https://github.com/o/r",
+            analyzed_at=commit_date,
+            summary="Test summary",
+            files=[
+                FileChange(
+                    filename="test.py",
+                    status="modified",
+                    additions=5,
+                    deletions=2,
+                    patch="",
+                ),
+            ],
+            chunks_count=1,
+            author="testuser",
+            message="Test commit",
+        )
+
+        analyses = db.get_recent_analyses("https://github.com/o/r", days=7)
+        assert len(analyses) == 1
+        assert analyses[0]["author"] == "testuser"
+        assert analyses[0]["message"] == "Test commit"
+

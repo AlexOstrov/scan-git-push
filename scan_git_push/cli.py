@@ -13,7 +13,7 @@ from loguru import logger
 
 from scan_git_push.analyzer import CommitAnalyzer, AnalysisResult
 from scan_git_push.config import Settings
-from scan_git_push.github_client import GitHubClient
+from scan_git_push.github_client import GitHubClient, FileChange
 from scan_git_push.llm.ollama import OllamaProvider
 from scan_git_push.llm.github_models import GitHubModelsProvider
 from scan_git_push.llm.groq import GroqProvider
@@ -414,6 +414,8 @@ def main(
                     summary=result.summary,
                     files=commit.files,
                     chunks_count=result.chunks_analyzed,
+                    author=commit.author,
+                    message=commit.message,
                 )
             except Exception as exc:
                 logger.error(f"Failed to analyze commit {commit.sha[:8]}: {exc}")
@@ -461,6 +463,112 @@ def main(
     memory_mgr.append_changelog(
         f"Analyzed {len(results)} commits from {repo_name} using {provider_name}/{model_name}"
     )
+
+    console.print("\n[bold green]Done![/bold green]")
+
+
+@app.command()
+def report_from_db(
+    config_path: Optional[str] = typer.Option(
+        None, "--config", "-c", help="Path to config.json"
+    ),
+    days: Optional[int] = typer.Option(
+        None, "--days", "-d", help="Number of days to look back (overrides GIT_DAY)"
+    ),
+) -> None:
+    """Generate report from database without calling LLM.
+
+    Reads previously analyzed commits from the SQLite database and
+    produces console, Markdown and HTML reports. No LLM provider is needed.
+    """
+    console.print("[bold green]scan-git-push[/bold green] (report from DB) v0.1.0\n")
+
+    # Load configuration
+    try:
+        settings = Settings.from_file(config_path or "config.json")
+    except FileNotFoundError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(code=1)
+
+    if not settings.git_project:
+        console.print("[red]Error: GIT_PROJECT is not set in config[/red]")
+        raise typer.Exit(code=1)
+
+    # Initialize database (read-only mode — no LLM needed)
+    db = DatabaseManager(settings.db_path)
+    db.initialize()
+
+    report_days = days if days is not None else settings.git_days
+    console.print(
+        f"[bold]Generating report from DB for {settings.git_project} "
+        f"(last {report_days} days)...[/bold]\n"
+    )
+
+    # Fetch analyses from database
+    analyses = db.get_recent_analyses(settings.git_project, report_days)
+
+    if not analyses:
+        console.print("[yellow]No analyzed commits found in database.[/yellow]")
+        raise typer.Exit(code=0)
+
+    console.print(f"  Found [bold]{len(analyses)}[/bold] analyzed commit(s) in DB.\n")
+
+    # Convert DB records to AnalysisResult objects for reporters
+    results: list[AnalysisResult] = []
+    for record in analyses:
+        files_records = db.get_commit_files(record["sha"], settings.git_project)
+        files = [
+            FileChange(
+                filename=fr["filename"],
+                status=fr["file_status"],
+                additions=fr["additions"],
+                deletions=fr["deletions"],
+            )
+            for fr in files_records
+        ]
+
+        results.append(
+            AnalysisResult(
+                sha=record["sha"],
+                author=record.get("author") or "unknown",
+                date=record["analyzed_at"],
+                message=record.get("message") or "",
+                files=[f.filename for f in files],
+                summary=record.get("summary") or "",
+                chunks_analyzed=record.get("chunks_count") or 0,
+            )
+        )
+
+        # Attach FileChange objects to results for reporters that need them
+        # (store as attribute for reporter access)
+        results[-1]._file_changes = files  # type: ignore[attr-defined]
+
+    # Generate reports
+    repo_name = _extract_repo_name(settings.git_project)
+
+    console.print("\n[bold]Generating reports...[/bold]\n")
+
+    # Console output
+    console_reporter = ConsoleReporter(console)
+    console_reporter.report(results, repo_name)
+
+    # Markdown report
+    md_path = MarkdownReporter().generate(
+        results=results,
+        repo_name=repo_name,
+        days=report_days,
+        output_dir=settings.output_dir,
+    )
+    console.print(f"  Markdown: [green]{md_path}[/green]")
+
+    # HTML report
+    html_path = HTMLReporter().generate(
+        results=results,
+        repo_name=repo_name,
+        days=report_days,
+        output_dir=settings.output_dir,
+    )
+    console.print(f"  HTML:     [green]{html_path}[/green]")
 
     console.print("\n[bold green]Done![/bold green]")
 

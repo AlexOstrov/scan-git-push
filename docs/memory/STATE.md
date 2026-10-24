@@ -16,8 +16,10 @@
 - Полный CLI с выбором модели, проверками и прогресс-баром (cli.py)
 - config.json заполнен (GIT_PROJECT: fullstack-demo)
 - База данных анализируемых коммитов (scan_git_push/database.py) — SQLite, фиксация проанализированных коммитов, фильтрация повторов, cleanup старых записей (60 дней)
-- Тесты написаны (config, github_client, analyzer, llm_providers, reporters, memory_manager, database)
-- Все 76 тестов проходят успешно
+- Команда `report-from-db` — генерация отчёта из БД без вызова LLM (консоль, Markdown, HTML)
+- Миграция БД: автоматическое добавление колонок author/message к существующим базам
+- Тесты написаны (config, github_client, analyzer, llm_providers, reporters, memory_manager, database, cli)
+- Все 81 тест проходит успешно
 - Dev-зависимости добавлены (pytest, pytest-asyncio, pytest-cov)
 - README.md создан
 - Валидация GITHUB_MODELS_TOKEN (понятная ошибка, exit code 6) — cli.py
@@ -43,7 +45,7 @@
 
 ## Следующие шаги
 1. Проверить работу с базой данных и Mistral AI в реальном окружении (генерация отчётов)
-2. В беклоге: повторная генерация отчёта из БД без вызова LLM
+2. Проверить команду report-from-db в реальном окружении (отчёт из БД без LLM)
 
 ## Последнее обновление
 2026-10-24
