@@ -29,6 +29,7 @@ scan_git_push/
 │   ├── openai_compatible.py # Generic OpenAI-compatible provider (httpx)
 │   ├── github_models.py      # GitHub Models (retired 30.07.2026)
 │   └── mistral.py            # Mistral AI provider
+├── database.py               # SQLite DB for analyzed commits (deduplication)
 ├── analyzer.py           # Commit analysis + diff chunking
 ├── reporters/
 │   ├── console.py        # Rich console output
@@ -44,6 +45,7 @@ scan_git_push/
 - **Token validation**: `GITHUB_MODELS_TOKEN` (code 6), `GROQ_API_KEY` (code 7) and `MISTRAL_API_KEY` (code 8) are validated with a clear message when their provider is selected; if absent and provider is `ollama`, they are skipped gracefully.
 - **OpenAI-compatible providers**: Implemented via plain `httpx` (`OpenAICompatibleProvider`) — no `openai` SDK dependency. Availability uses a minimal chat request; model listing falls back to a curated list.
 - **Region restrictions**: Groq and GitHub Models are geo-blocked in some regions (incl. RF). Mistral AI is used as the online provider.
+- **Database**: SQLite (`db/`) — stores analyzed commit SHA, summary, files, chunks; deduplicates on re-run; cleanup records older than 60 days
 - **Diff chunking**: Splits on file boundaries at 12 000 chars (`MAX_DIFF_CHARS_PER_CHUNK`); merges per-chunk summaries
 - **Retry policy**: 3 attempts, exponential backoff factor 2, 30 s HTTP timeout
 - **Merge commits**: Excluded from analysis

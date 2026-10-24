@@ -19,6 +19,7 @@ from scan_git_push.llm.github_models import GitHubModelsProvider
 from scan_git_push.llm.groq import GroqProvider
 from scan_git_push.llm.mistral import MistralProvider
 from scan_git_push.memory.manager import MemoryManager
+from scan_git_push.database import DatabaseManager
 from scan_git_push.reporters.console import ConsoleReporter
 from scan_git_push.reporters.markdown import MarkdownReporter
 from scan_git_push.reporters.html import HTMLReporter
@@ -212,6 +213,10 @@ def main(
     # Validate secrets
     _check_secrets(settings)
 
+    # Initialize artifact database
+    db = DatabaseManager(settings.db_path)
+    db.initialize()
+
     # Check provider availability. Both providers are queried best-effort so the
     # user can switch between them at runtime by picking any listed model.
     console.print("[bold]Checking LLM provider availability...[/bold]\n")
@@ -363,7 +368,19 @@ def main(
         console.print("[yellow]No commits found in the specified period.[/yellow]")
         raise typer.Exit(code=0)
 
-    console.print(f"  Found [bold]{len(commits)}[/bold] commits to analyze.\n")
+    # Filter out already analyzed commits
+    unanalyzed_commits = db.filter_unanalyzed(commits, settings.git_project)
+    skipped_count = len(commits) - len(unanalyzed_commits)
+    if skipped_count:
+        console.print(f"  [dim]Skipping [bold]{skipped_count}[/bold] already analyzed commit(s)[/dim]\n")
+
+    commits = unanalyzed_commits
+
+    if not commits:
+        console.print("[yellow]No new commits to analyze.[/yellow]")
+        raise typer.Exit(code=0)
+
+    console.print(f"  Found [bold]{len(commits)}[/bold] new commit(s) to analyze.\n")
 
     # Analyze commits
     analyzer = CommitAnalyzer(
@@ -389,6 +406,15 @@ def main(
             try:
                 result = analyzer.analyze_commit(commit)
                 results.append(result)
+                # Save to artifact database
+                db.save_commit_analysis(
+                    commit_sha=commit.sha,
+                    repo_url=settings.git_project,
+                    analyzed_at=commit.date,
+                    summary=result.summary,
+                    files=commit.files,
+                    chunks_count=result.chunks_analyzed,
+                )
             except Exception as exc:
                 logger.error(f"Failed to analyze commit {commit.sha[:8]}: {exc}")
                 console.print(f"  [yellow]Warning: Skipped commit {commit.sha[:8]}: {exc}[/yellow]")
@@ -420,6 +446,14 @@ def main(
         output_dir=settings.output_dir,
     )
     console.print(f"  HTML:     [green]{html_path}[/green]")
+
+    # Cleanup old records from the database
+    deleted = db.cleanup_old_records(settings.db_retention_days)
+    if deleted:
+        console.print(
+            f"  [dim]Cleaned up [bold]{deleted}[/bold] old record(s) "
+            f"(older than {settings.db_retention_days} days)[/dim]"
+        )
 
     # Update artifact memory
     memory_mgr = MemoryManager(settings.memory_dir)

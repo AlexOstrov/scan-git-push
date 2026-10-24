@@ -1,7 +1,7 @@
 # Текущее состояние проекта
 
 ## Текущая задача
-Добавить MISTRAL_API_KEY в .secrets и проверить работу с Mistral AI в реальном окружении
+Проверить работу с базой данных анализируемых коммитов и Mistral AI в реальном окружении
 
 ## Реализованы
 - ТЗ актуализировано (полное, непротиворечивое, реализуемое)
@@ -15,8 +15,9 @@
 - Менеджер памяти (memory/manager.py)
 - Полный CLI с выбором модели, проверками и прогресс-баром (cli.py)
 - config.json заполнен (GIT_PROJECT: fullstack-demo)
-- Тесты написаны (config, github_client, analyzer, llm_providers, reporters, memory_manager)
-- Все 66 тестов проходят успешно
+- База данных анализируемых коммитов (scan_git_push/database.py) — SQLite, фиксация проанализированных коммитов, фильтрация повторов, cleanup старых записей (60 дней)
+- Тесты написаны (config, github_client, analyzer, llm_providers, reporters, memory_manager, database)
+- Все 76 тестов проходят успешно
 - Dev-зависимости добавлены (pytest, pytest-asyncio, pytest-cov)
 - README.md создан
 - Валидация GITHUB_MODELS_TOKEN (понятная ошибка, exit code 6) — cli.py
@@ -36,12 +37,13 @@
 - Вывод: консоль (rich) + Markdown + интерактивный HTML
 - Retry с exponential backoff (3 попытки, factor 2)
 - Chunking больших diff по границам файлов (лимит 12000 символов)
-- Артефактная память в docs/memory/ с формат STATE.md
+- База данных анализируемых коммитов (SQLite, db/): фиксация SHA + саммари + файлы, фильтрация повторных анализов, cleanup записей старше 60 дней
 - GitHub Models закрыт 30.07.2026 (models.github.ai отдаёт "OK") → замена на Groq, затем на Mistral AI
 - OpenAI-совместимые провайдеры на чистом httpx (без openai SDK)
 
 ## Следующие шаги
-1. Добавить MISTRAL_API_KEY в .secrets и запустить утилиту с Mistral AI (проверить генерацию отчётов)
+1. Проверить работу с базой данных и Mistral AI в реальном окружении (генерация отчётов)
+2. В беклоге: повторная генерация отчёта из БД без вызова LLM
 
 ## Последнее обновление
-2026-10-21
+2026-10-24

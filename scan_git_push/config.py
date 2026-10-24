@@ -86,6 +86,10 @@ class Settings(BaseSettings):
     output_dir: Path = Field(default=Path("reports/"), alias="OUTPUT_DIR")
     memory_dir: Path = Field(default=Path("docs/memory/"), alias="MEMORY_DIR")
 
+    # Database settings
+    db_path: Path = Field(default=Path("db/"), alias="DB_PATH")
+    db_retention_days: int = Field(default=60, alias="DB_RETENTION_DAYS", ge=1, le=3650)
+
     @field_validator("git_project")
     @classmethod
     def validate_git_project(cls, v: str) -> str:

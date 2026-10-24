@@ -243,7 +243,9 @@ source .venv/bin/activate</code></pre>
   "GROQ_MODEL": "llama-3.3-70b-versatile",
   "GROQ_ENDPOINT": "https://api.groq.com/openai/v1",
   "MISTRAL_MODEL": "mistral-small-latest",
-  "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1"
+  "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1",
+  "DB_PATH": "db/",
+  "DB_RETENTION_DAYS": 60
 }</code></pre>
 
 <div class="note">
@@ -263,6 +265,8 @@ source .venv/bin/activate</code></pre>
   <tr><td><code>GROQ_ENDPOINT</code></td><td>Endpoint Groq API</td><td><code>https://api.groq.com/openai/v1</code></td></tr>
   <tr><td><code>MISTRAL_MODEL</code></td><td>Модель Mistral AI</td><td><code>mistral-small-latest</code></td></tr>
   <tr><td><code>MISTRAL_ENDPOINT</code></td><td>Endpoint Mistral AI</td><td><code>https://api.mistral.ai/v1</code></td></tr>
+  <tr><td><code>DB_PATH</code></td><td>Каталог для базы данных анализа коммитов</td><td><code>db/</code></td></tr>
+  <tr><td><code>DB_RETENTION_DAYS</code></td><td>Срок хранения записей в БД (дней)</td><td>60</td></tr>
 </table>
 
 <h3>Настройка Mistral AI (онлайн-модель)</h3>
@@ -300,6 +304,11 @@ source .venv/bin/activate</code></pre>
 <div class="note">
   <div class="note-title">Интерактивный выбор модели</div>
   <p style="margin-bottom:0;">При запуске утилита покажет нумерованный список доступных моделей. Введите номер модели и нажмите Enter.</p>
+</div>
+
+<div class="note">
+  <div class="note-title">Дедупликация коммитов (база данных)</div>
+  <p style="margin-bottom:0;">При каждом запуске утилита проверяет уже проанализированные коммиты в SQLite-базе (<code>db/</code>). Коммиты, которые были проанализированы ранее, не анализируются повторно — это предотвращает дублирование при ежедневных запусках. Записи старше <code>DB_RETENTION_DAYS</code> (по умолчанию 60 дней) автоматически удаляются из базы.</p>
 </div>
 
 <h2 id="output">6. Результаты</h2>
@@ -360,6 +369,11 @@ source .venv/bin/activate</code></pre>
     <td><code>Exit code: 8</code><br>MISTRAL_API_KEY missing</td>
     <td>Ключ отсутствует или пуст в файле секретов (при <code>LLM_PROVIDER=mistral</code>)</td>
     <td>Добавьте в <code>.secrets</code>: <code>MISTRAL_API_KEY=...</code></td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 9</code><br>Database error</td>
+    <td>Ошибка открытия или записи в базу данных</td>
+    <td>Проверьте права на запись в каталог <code>db/</code></td>
   </tr>
   <tr>
     <td><code>BadCredentialsException: 401</code></td>

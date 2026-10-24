@@ -20,6 +20,7 @@ env/
 # Generated reports and logs
 reports/
 logs/
+db/
 
 # IDE
 .idea/
