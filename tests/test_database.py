@@ -1,219 +1,263 @@
-"""Tests for the database manager module."""
+"""Tests for ``analysis.db`` (schema version 1)."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-from scan_git_push.database import DatabaseManager
-from scan_git_push.github_client import CommitData, FileChange
+from scan_git_push.database import DatabaseManager, SchemaVersionError
+from scan_git_push.git.models import CommitData, FileChange
 
 
 @pytest.fixture
 def temp_db(tmp_path: Path) -> DatabaseManager:
-    """Create a temporary database manager."""
-    db_dir = tmp_path / "db"
-    db = DatabaseManager(db_dir)
+    db = DatabaseManager(tmp_path / "db")
     db.initialize()
     return db
 
 
 @pytest.fixture
 def sample_commit() -> CommitData:
-    """Create a sample CommitData."""
     return CommitData(
         sha="abc123def456",
         author="testuser",
         date=datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc),
         message="Test commit message",
+        committer="testuser",
+        email="test@example.com",
         files=[
-            FileChange(
-                filename="test_file.py",
-                status="modified",
-                additions=10,
-                deletions=5,
-                patch="@@ -1,3 +1,5 @@\n+new line\n-old line",
-            ),
+            FileChange(path="test_file.py", status="modified", additions=10, deletions=5),
+            FileChange(path="logo.png", status="added", is_binary=True),
         ],
-        is_merge=False,
     )
 
 
-class TestDatabaseManager:
-    """Test DatabaseManager class."""
+def _save(db: DatabaseManager, project_id: int, commit: CommitData, summary: str = "sum") -> int:
+    return db.save_commit_analysis(
+        project_id=project_id,
+        commit=commit,
+        summary=summary,
+        chunks_count=1,
+        provider="fake",
+        model="fake-model",
+    )
 
-    def test_initialize_creates_tables(self, temp_db: DatabaseManager) -> None:
-        """Test that tables are created on initialize."""
-        # Tables exist — no exception raised
-        assert temp_db.db_path.exists()
 
-    def test_is_commit_analyzed_false_for_new(self, temp_db: DatabaseManager) -> None:
-        """Test that a new commit is not analyzed."""
-        assert temp_db.is_commit_analyzed("abc123", "https://github.com/o/r") is False
+class TestSchema:
+    def test_creates_version_1(self, temp_db: DatabaseManager) -> None:
+        assert temp_db.schema_version() == 1
+        with temp_db.connect() as conn:
+            names = {
+                row[0]
+                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+        assert {"schema_version", "git_project", "analyzed_commits", "commit_files"} <= names
 
-    def test_save_and_check_commit(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test saving a commit and then checking it is analyzed."""
-        temp_db.save_commit_analysis(
-            commit_sha=sample_commit.sha,
-            repo_url="https://github.com/o/r",
-            analyzed_at=sample_commit.date,
-            summary="Test summary",
-            files=sample_commit.files,
-            chunks_count=1,
-        )
+    def test_pragmas_are_applied(self, temp_db: DatabaseManager) -> None:
+        with temp_db.connect() as conn:
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 5000
 
-        assert temp_db.is_commit_analyzed(sample_commit.sha, "https://github.com/o/r") is True
+    def test_incompatible_version_raises(self, temp_db: DatabaseManager) -> None:
+        with temp_db.connect() as conn:
+            conn.execute("UPDATE schema_version SET version = 2")
+        with pytest.raises(SchemaVersionError):
+            temp_db.initialize()
+
+    def test_unrecognizable_database_raises(self, tmp_path: Path) -> None:
+        path = tmp_path / "db" / "analysis.db"
+        path.parent.mkdir(parents=True)
+        conn = sqlite3.connect(str(path))
+        conn.execute("CREATE TABLE something_else (id INTEGER)")
+        conn.commit()
+        conn.close()
+
+        db = DatabaseManager(path)
+        with pytest.raises(SchemaVersionError):
+            db.initialize()
+
+
+class TestProjects:
+    def test_ensure_project_is_idempotent(self, temp_db: DatabaseManager) -> None:
+        first = temp_db.ensure_project("https://github.com/Owner/Repo.git")
+        second = temp_db.ensure_project("https://github.com/Owner/Repo")
+        assert first == second
+        projects = temp_db.list_projects()
+        assert len(projects) == 1
+        assert projects[0]["url_key"] == "github.com/Owner/Repo"
+        assert projects[0]["url"].endswith("Owner/Repo")
+
+    def test_get_project_id_missing(self, temp_db: DatabaseManager) -> None:
+        assert temp_db.get_project_id("https://github.com/o/missing") is None
+
+
+class TestCommitStorage:
+    def test_save_and_read(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        _save(temp_db, project_id, sample_commit)
+
+        rows = temp_db.get_analyses([project_id], days=3650)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["sha"] == sample_commit.sha
+        assert row["summary"] == "sum"
+        assert row["author"] == "testuser"
+        assert row["message"] == "Test commit message"
+        assert row["additions"] == 10
+        assert row["deletions"] == 5
+        assert row["provider"] == "fake"
+        files = {file["path"]: file for file in row["files"]}
+        assert files["test_file.py"]["file_status"] == "modified"
+        assert files["logo.png"]["is_binary"] == 1
+
+    def test_save_replaces_existing(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        _save(temp_db, project_id, sample_commit, summary="first")
+        _save(temp_db, project_id, sample_commit, summary="second")
+
+        rows = temp_db.get_analyses([project_id])
+        assert len(rows) == 1
+        assert rows[0]["summary"] == "second"
 
     def test_filter_unanalyzed(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test filtering out already analyzed commits."""
-        repo_url = "https://github.com/o/r"
-
-        # Save one commit as analyzed
-        temp_db.save_commit_analysis(
-            commit_sha=sample_commit.sha,
-            repo_url=repo_url,
-            analyzed_at=sample_commit.date,
-            summary="Test summary",
-            files=sample_commit.files,
-            chunks_count=1,
-        )
-
-        # Create two commits: one analyzed, one new
-        new_commit = CommitData(
-            sha="new456",
-            author="testuser",
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        other = CommitData(
+            sha="fff000",
+            author="a",
             date=sample_commit.date,
-            message="New commit",
-            files=[],
-            is_merge=False,
+            message="other",
         )
+        assert len(temp_db.filter_unanalyzed([sample_commit, other], project_id)) == 2
 
-        commits = [sample_commit, new_commit]
-        unanalyzed = temp_db.filter_unanalyzed(commits, repo_url)
+        _save(temp_db, project_id, sample_commit)
+        pending = temp_db.filter_unanalyzed([sample_commit, other], project_id)
+        assert [commit.sha for commit in pending] == [other.sha]
 
-        assert len(unanalyzed) == 1
-        assert unanalyzed[0].sha == "new456"
+    def test_same_sha_in_different_projects(
+        self, temp_db: DatabaseManager, sample_commit: CommitData
+    ) -> None:
+        first = temp_db.ensure_project("https://github.com/o/one")
+        second = temp_db.ensure_project("https://github.com/o/two")
+        _save(temp_db, first, sample_commit)
+        _save(temp_db, second, sample_commit)
+        assert temp_db.count_commits(first) == 1
+        assert temp_db.count_commits(second) == 1
+        assert temp_db.count_commits() == 2
 
-    def test_filter_unanalyzed_empty_list(self, temp_db: DatabaseManager) -> None:
-        """Test filtering with empty commit list."""
-        result = temp_db.filter_unanalyzed([], "https://github.com/o/r")
-        assert result == []
-
-    def test_save_and_get_files(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test saving and retrieving commit files."""
-        temp_db.save_commit_analysis(
-            commit_sha=sample_commit.sha,
-            repo_url="https://github.com/o/r",
-            analyzed_at=sample_commit.date,
-            summary="Test summary",
-            files=sample_commit.files,
-            chunks_count=1,
-            author=sample_commit.author,
-            message=sample_commit.message,
+    def test_period_filter(self, temp_db: DatabaseManager) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        now = datetime.now(timezone.utc)
+        recent = CommitData(sha="recent", author="a", date=now, message="recent")
+        old = CommitData(
+            sha="old", author="a", date=now - timedelta(days=100), message="old"
         )
+        _save(temp_db, project_id, recent)
+        _save(temp_db, project_id, old)
 
-        files = temp_db.get_commit_files(sample_commit.sha, "https://github.com/o/r")
-        assert len(files) == 1
-        assert files[0]["filename"] == "test_file.py"
-        assert files[0]["file_status"] == "modified"
-        assert files[0]["additions"] == 10
-        assert files[0]["deletions"] == 5
+        rows = temp_db.get_analyses([project_id], days=7)
+        assert [row["sha"] for row in rows] == ["recent"]
 
-    def test_save_with_author_and_message(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test saving commit with author and message fields."""
-        temp_db.save_commit_analysis(
-            commit_sha=sample_commit.sha,
-            repo_url="https://github.com/o/r",
-            analyzed_at=sample_commit.date,
-            summary="Test summary",
-            files=sample_commit.files,
-            chunks_count=1,
-            author=sample_commit.author,
-            message=sample_commit.message,
+    def test_cleanup_removes_old_records(self, temp_db: DatabaseManager) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        now = datetime.now(timezone.utc)
+        _save(temp_db, project_id, CommitData(sha="new", author="a", date=now, message="n"))
+        _save(
+            temp_db,
+            project_id,
+            CommitData(sha="old", author="a", date=now - timedelta(days=90), message="o"),
         )
+        assert temp_db.cleanup_old_records(60) == 1
+        assert temp_db.count_commits(project_id) == 1
 
-        analyses = temp_db.get_recent_analyses("https://github.com/o/r", days=7)
-        assert len(analyses) == 1
-        assert analyses[0]["author"] == "testuser"
-        assert analyses[0]["message"] == "Test commit message"
+    def test_delete_project_cascades(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        _save(temp_db, project_id, sample_commit)
+        with temp_db.connect() as conn:
+            conn.execute("DELETE FROM git_project WHERE id = ?", (project_id,))
+            assert conn.execute("SELECT COUNT(*) FROM analyzed_commits").fetchone()[0] == 0
+            assert conn.execute("SELECT COUNT(*) FROM commit_files").fetchone()[0] == 0
 
-    def test_get_recent_analyses_includes_author_message(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test that get_recent_analyses returns author and message."""
-        temp_db.save_commit_analysis(
-            commit_sha=sample_commit.sha,
-            repo_url="https://github.com/o/r",
-            analyzed_at=sample_commit.date,
-            summary="Test summary",
-            files=sample_commit.files,
-            chunks_count=1,
-            author=sample_commit.author,
-            message=sample_commit.message,
+
+class TestLegacyMigration:
+    def _create_legacy(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(path))
+        conn.executescript(
+            """
+            CREATE TABLE analyzed_commits (
+                sha TEXT NOT NULL,
+                repo_url TEXT NOT NULL,
+                analyzed_at TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'success',
+                summary TEXT,
+                author TEXT,
+                message TEXT,
+                files_count INTEGER DEFAULT 0,
+                chunks_count INTEGER DEFAULT 0,
+                PRIMARY KEY (sha, repo_url)
+            );
+            CREATE TABLE commit_files (
+                commit_sha TEXT NOT NULL,
+                repo_url TEXT NOT NULL,
+                filename TEXT NOT NULL,
+                file_status TEXT,
+                additions INTEGER DEFAULT 0,
+                deletions INTEGER DEFAULT 0,
+                PRIMARY KEY (commit_sha, repo_url, filename),
+                FOREIGN KEY (commit_sha, repo_url)
+                    REFERENCES analyzed_commits(sha, repo_url)
+            );
+            """
         )
-
-        analyses = temp_db.get_recent_analyses("https://github.com/o/r", days=7)
-        assert analyses[0]["author"] == "testuser"
-        assert analyses[0]["message"] == "Test commit message"
-
-    def test_cleanup_old_records(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test cleanup of old records."""
-        # Save an old commit (61 days ago)
-        old_date = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
-        temp_db.save_commit_analysis(
-            commit_sha="old123",
-            repo_url="https://github.com/o/r",
-            analyzed_at=old_date,
-            summary="Old commit",
-            files=[],
-            chunks_count=1,
+        conn.execute(
+            "INSERT INTO analyzed_commits VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "abc123",
+                "https://github.com/o/r",
+                "2026-10-20T12:00:00+00:00",
+                "success",
+                "legacy summary",
+                "legacy author",
+                "legacy message",
+                1,
+                1,
+            ),
         )
-
-        # Save a recent commit
-        temp_db.save_commit_analysis(
-            commit_sha="new123",
-            repo_url="https://github.com/o/r",
-            analyzed_at=datetime.now(timezone.utc),
-            summary="New commit",
-            files=[],
-            chunks_count=1,
+        conn.execute(
+            "INSERT INTO commit_files VALUES (?, ?, ?, ?, ?, ?)",
+            ("abc123", "https://github.com/o/r", "old.py", "modified", 3, 1),
         )
+        conn.commit()
+        conn.close()
 
-        deleted = temp_db.cleanup_old_records(retention_days=60)
-        assert deleted == 1
+    def test_migration_preserves_data_and_backs_up(self, tmp_path: Path) -> None:
+        path = tmp_path / "db" / "analysis.db"
+        self._create_legacy(path)
 
-        # Old commit should be gone
-        assert temp_db.is_commit_analyzed("old123", "https://github.com/o/r") is False
-        # Recent commit should remain
-        assert temp_db.is_commit_analyzed("new123", "https://github.com/o/r") is True
+        db = DatabaseManager(path)
+        db.initialize()
 
-    def test_cleanup_no_old_records(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test cleanup when no records are old."""
-        temp_db.save_commit_analysis(
-            commit_sha="new123",
-            repo_url="https://github.com/o/r",
-            analyzed_at=datetime.now(timezone.utc),
-            summary="New commit",
-            files=[],
-            chunks_count=1,
-        )
+        assert db.schema_version() == 1
+        assert (tmp_path / "db" / "analysis.db.bak").exists()
 
-        deleted = temp_db.cleanup_old_records(retention_days=60)
-        assert deleted == 0
+        project_id = db.get_project_id("https://github.com/o/r")
+        assert project_id is not None
+        rows = db.get_analyses([project_id], days=3650)
+        assert len(rows) == 1
+        assert rows[0]["summary"] == "legacy summary"
+        assert rows[0]["author"] == "legacy author"
+        assert rows[0]["files"][0]["path"] == "old.py"
 
-    def test_get_recent_analyses(self, temp_db: DatabaseManager, sample_commit: CommitData) -> None:
-        """Test retrieving recent analyses."""
-        temp_db.save_commit_analysis(
-            commit_sha=sample_commit.sha,
-            repo_url="https://github.com/o/r",
-            analyzed_at=sample_commit.date,
-            summary="Test summary",
-            files=sample_commit.files,
-            chunks_count=1,
-        )
+    def test_migration_is_one_time(self, tmp_path: Path) -> None:
+        path = tmp_path / "db" / "analysis.db"
+        self._create_legacy(path)
 
-        analyses = temp_db.get_recent_analyses("https://github.com/o/r", days=7)
-        assert len(analyses) == 1
-        assert analyses[0]["sha"] == sample_commit.sha
-        assert analyses[0]["summary"] == "Test summary"
+        DatabaseManager(path).initialize()
+        db = DatabaseManager(path)
+        db.initialize()
+        assert db.schema_version() == 1
+        assert db.count_commits() == 1

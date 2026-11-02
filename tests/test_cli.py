@@ -1,324 +1,265 @@
-"""Tests for CLI secret/token validation helpers."""
+"""Tests for the CLI: commands, exit codes and JSON output."""
 
 from __future__ import annotations
 
 import json
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
-import typer
 from typer.testing import CliRunner
 
-from scan_git_push.cli import app
 from scan_git_push.cli import (
-    _check_secrets,
-    _require_github_models_token,
-    _require_groq_token,
-    _require_mistral_token,
-    _try_github_models_token,
+    EXIT_ARGS,
+    EXIT_CONFIG,
+    EXIT_OK,
+    EXIT_SCHEMA,
+    _resolve_projects,
+    app,
 )
 from scan_git_push.config import Settings
 from scan_git_push.database import DatabaseManager
-from scan_git_push.github_client import CommitData, FileChange
+from scan_git_push.git.models import CommitData, FileChange
+from scan_git_push.llm.registry import ModelOption
+
+runner = CliRunner()
 
 
-def _settings(secrets_path: Path, llm_provider: str = "github_models") -> Settings:
-    return Settings(
-        git_project="https://github.com/owner/repo",
-        secrets_path=str(secrets_path),
-        llm_provider=llm_provider,
-    )
+def _fake_select(model_option: ModelOption | None = None, provider=None):
+    option = model_option or ModelOption("fake", "fake-model")
+
+    def _select(registry, console, model_spec, non_interactive):
+        return option, provider
+
+    return _select
 
 
-class TestRequireGitHubModelsToken:
-    """Test _require_github_models_token."""
-
-    def test_token_present(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nGITHUB_MODELS_TOKEN=m\n", encoding="utf-8")
-        settings = _settings(secrets)
-        assert _require_github_models_token(settings) == "m"
-
-    def test_token_missing(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets)
-        with pytest.raises(typer.Exit) as exc:
-            _require_github_models_token(settings)
-        assert exc.value.exit_code == 6
-
-    def test_token_empty(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nGITHUB_MODELS_TOKEN=\n", encoding="utf-8")
-        settings = _settings(secrets)
-        with pytest.raises(typer.Exit) as exc:
-            _require_github_models_token(settings)
-        assert exc.value.exit_code == 6
-
-    def test_secrets_file_missing(self, tmp_path: Path) -> None:
-        settings = _settings(tmp_path / "nonexistent")
-        with pytest.raises(typer.Exit) as exc:
-            _require_github_models_token(settings)
-        assert exc.value.exit_code == 6
+def _patch_llm(fake_provider):
+    return patch("scan_git_push.cli._select_model", _fake_select(provider=fake_provider))
 
 
-class TestRequireGroqToken:
-    """Test _require_groq_token."""
-
-    def test_token_present(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nGROQ_API_KEY=g\n", encoding="utf-8")
-        settings = _settings(secrets)
-        assert _require_groq_token(settings) == "g"
-
-    def test_token_missing(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets)
-        with pytest.raises(typer.Exit) as exc:
-            _require_groq_token(settings)
-        assert exc.value.exit_code == 7
-
-    def test_token_empty(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nGROQ_API_KEY=\n", encoding="utf-8")
-        settings = _settings(secrets)
-        with pytest.raises(typer.Exit) as exc:
-            _require_groq_token(settings)
-        assert exc.value.exit_code == 7
-
-
-class TestRequireMistralToken:
-    """Test _require_mistral_token."""
-
-    def test_token_present(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=m\n", encoding="utf-8")
-        settings = _settings(secrets)
-        assert _require_mistral_token(settings) == "m"
-
-    def test_token_missing(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets)
-        with pytest.raises(typer.Exit) as exc:
-            _require_mistral_token(settings)
-        assert exc.value.exit_code == 8
-
-    def test_token_empty(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=\n", encoding="utf-8")
-        settings = _settings(secrets)
-        with pytest.raises(typer.Exit) as exc:
-            _require_mistral_token(settings)
-        assert exc.value.exit_code == 8
-
-
-class TestTryGitHubModelsToken:
-    """Test _try_github_models_token (best effort)."""
-
-    def test_token_present(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nGITHUB_MODELS_TOKEN=m\n", encoding="utf-8")
-        settings = _settings(secrets)
-        assert _try_github_models_token(settings) == "m"
-
-    def test_token_missing_returns_none(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets)
-        assert _try_github_models_token(settings) is None
-
-
-class TestCheckSecrets:
-    """Test _check_secrets."""
-
-    def test_github_token_missing(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_MODELS_TOKEN=m\n", encoding="utf-8")
-        settings = _settings(secrets)
-        with pytest.raises(typer.Exit) as exc:
-            _check_secrets(settings)
-        assert exc.value.exit_code == 2
-
-    def test_github_models_provider_requires_models_token(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets, llm_provider="github_models")
-        with pytest.raises(typer.Exit) as exc:
-            _check_secrets(settings)
-        assert exc.value.exit_code == 6
-
-    def test_ollama_provider_does_not_require_models_token(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets, llm_provider="ollama")
-        # Should not raise
-        _check_secrets(settings)
-
-    def test_groq_provider_requires_token(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets, llm_provider="groq")
-        with pytest.raises(typer.Exit) as exc:
-            _check_secrets(settings)
-        assert exc.value.exit_code == 7
-
-    def test_mistral_provider_requires_token(self, tmp_path: Path) -> None:
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\n", encoding="utf-8")
-        settings = _settings(secrets, llm_provider="mistral")
-        with pytest.raises(typer.Exit) as exc:
-            _check_secrets(settings)
-        assert exc.value.exit_code == 8
-
-    def test_secrets_file_missing(self, tmp_path: Path) -> None:
-        settings = _settings(tmp_path / "nonexistent")
-        with pytest.raises(typer.Exit) as exc:
-            _check_secrets(settings)
-        assert exc.value.exit_code == 1
-
-
-class TestReportFromDb:
-    """Test report-from-db command."""
-
-    def test_report_from_db_empty(self, tmp_path: Path) -> None:
-        """Test report-from-db with empty database."""
-        db_dir = tmp_path / "db"
-        db = DatabaseManager(db_dir)
-        db.initialize()
-
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=m\n", encoding="utf-8")
-        config = tmp_path / "config.json"
-        config.write_text(
-            json.dumps(
-                {
-                    "GIT_PROJECT": "https://github.com/o/r",
-                    "SECRETS_PATH": str(secrets),
-                    "DB_PATH": str(db_dir),
-                }
-            ),
-            encoding="utf-8",
+class TestResolveProjects:
+    def test_projects_are_deduplicated(self, settings: Settings, git_repo: Path) -> None:
+        refs = _resolve_projects(
+            settings, [str(git_repo), str(git_repo) + "/", str(git_repo)]
         )
+        assert len(refs) == 1
 
-        runner = CliRunner()
-        result = runner.invoke(app, ["report-from-db", "--config", str(config), "--days", "7"])
-        assert result.exit_code == 0
-        assert "No analyzed commits found in database" in result.output
+    def test_no_projects_is_an_error(self, tmp_path: Path) -> None:
+        import typer
 
-    def test_report_from_db_with_data(self, tmp_path: Path) -> None:
-        """Test report-from-db with data in database."""
-        db_dir = tmp_path / "db"
-        db = DatabaseManager(db_dir)
-        db.initialize()
-
-        # Save a commit to DB
-        from datetime import datetime, timezone
-
-        commit_date = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
-        db.save_commit_analysis(
-            commit_sha="abc123",
-            repo_url="https://github.com/o/r",
-            analyzed_at=commit_date,
-            summary="Test summary",
-            files=[
-                FileChange(
-                    filename="test.py",
-                    status="modified",
-                    additions=5,
-                    deletions=2,
-                    patch="",
-                ),
-            ],
-            chunks_count=1,
-            author="testuser",
-            message="Test commit",
-        )
-
-        secrets = tmp_path / ".secrets"
-        secrets.write_text("GITHUB_TOKEN=t\nMISTRAL_API_KEY=m\n", encoding="utf-8")
-        config = tmp_path / "config.json"
-        config.write_text(
-            json.dumps(
-                {
-                    "GIT_PROJECT": "https://github.com/o/r",
-                    "SECRETS_PATH": str(secrets),
-                    "DB_PATH": str(db_dir),
-                }
-            ),
-            encoding="utf-8",
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(app, ["report-from-db", "--config", str(config), "--days", "7"])
-        assert result.exit_code == 0
-        assert "abc123" in result.output
-        assert "testuser" in result.output
-        assert "Test summary" in result.output
-        assert "test.py" in result.output
+        path = tmp_path / "config.json"
+        path.write_text(json.dumps({"SCAN": {"GIT_PROJECTS": []}}), encoding="utf-8")
+        settings = Settings.from_file(path)
+        with pytest.raises(typer.Exit) as exc:
+            _resolve_projects(settings, None)
+        assert exc.value.exit_code == EXIT_CONFIG
 
 
-class TestDatabaseMigration:
-    """Test database migration for existing databases without author/message columns."""
+class TestAnalyze:
+    def test_full_run_writes_reports_and_db(
+        self, config_file: Path, git_repo: Path, fake_llm
+    ) -> None:
+        with _patch_llm(fake_llm):
+            result = runner.invoke(
+                app,
+                [
+                    "main",
+                    "--config",
+                    str(config_file),
+                    "--days",
+                    "30",
+                    "--json",
+                    "--non-interactive",
+                ],
+            )
 
-    def test_migration_adds_columns(self, tmp_path: Path) -> None:
-        """Test that existing database gets author/message columns added."""
-        import sqlite3
+        assert result.exit_code == EXIT_OK, result.output
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["days"] == 30
+        assert payload["model"] == {"provider": "fake", "model": "fake-model"}
+        assert payload["analyzed_now"] == 3
+        assert len(payload["projects"]) == 1
 
-        db_dir = tmp_path / "db"
-        db_dir.mkdir(parents=True, exist_ok=True)
-        db_path = db_dir / "analysis.db"
+        project = payload["projects"][0]
+        assert project["commits"]
+        assert project["reports"]["markdown"].endswith(".md")
+        assert Path(project["reports"]["markdown"]).exists()
+        assert Path(project["reports"]["html"]).exists()
+        assert payload["summary"]["markdown"].endswith("_summary_" + _today() + ".md")
 
-        # Create old schema without author/message
+        db = DatabaseManager(config_file.parent / "db" / "analysis.db")
+        assert db.count_commits() == 3
+
+    def test_second_run_is_deduplicated(
+        self, config_file: Path, git_repo: Path, fake_llm
+    ) -> None:
+        args = [
+            "analyze",
+            "--config",
+            str(config_file),
+            "--days",
+            "30",
+            "--json",
+            "--non-interactive",
+        ]
+        with _patch_llm(fake_llm):
+            first = runner.invoke(app, args)
+            second = runner.invoke(app, args)
+
+        assert first.exit_code == EXIT_OK, first.output
+        assert second.exit_code == EXIT_OK, second.output
+        payload = json.loads(second.output[second.output.index("{") :])
+        assert payload["analyzed_now"] == 0
+        # The report is rebuilt from the database even without new commits.
+        assert payload["projects"][0]["commits"]
+
+    def test_reanalyze_flag(
+        self, config_file: Path, git_repo: Path, fake_llm
+    ) -> None:
+        args = [
+            "analyze",
+            "--config",
+            str(config_file),
+            "--days",
+            "30",
+            "--json",
+            "--non-interactive",
+        ]
+        with _patch_llm(fake_llm):
+            runner.invoke(app, args)
+            result = runner.invoke(app, [*args, "--reanalyze"])
+
+        assert result.exit_code == EXIT_OK, result.output
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["analyzed_now"] == 3
+
+    def test_project_option_overrides_config(
+        self, config_file: Path, git_repo: Path, tmp_path: Path, fake_llm
+    ) -> None:
+        other = tmp_path / "other"
+        other.mkdir()
+        import subprocess
+
+        subprocess.run(["git", "init", "-b", "main"], cwd=other, check=True)
+        subprocess.run(["git", "config", "user.email", "a@b.c"], cwd=other, check=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=other, check=True)
+        (other / "x.txt").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=other, check=True)
+        subprocess.run(["git", "commit", "-m", "only"], cwd=other, check=True)
+
+        with _patch_llm(fake_llm):
+            result = runner.invoke(
+                app,
+                [
+                    "analyze",
+                    "--config",
+                    str(config_file),
+                    "--project",
+                    str(other),
+                    "--days",
+                    "30",
+                    "--json",
+                ],
+            )
+        assert result.exit_code == EXIT_OK, result.output
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert len(payload["projects"]) == 1
+        assert payload["analyzed_now"] == 1
+
+    def test_missing_config(self, tmp_path: Path) -> None:
+        result = runner.invoke(app, ["main", "--config", str(tmp_path / "nope.json")])
+        assert result.exit_code == EXIT_CONFIG
+
+    def test_invalid_days(self, config_file: Path) -> None:
+        result = runner.invoke(app, ["main", "--config", str(config_file), "--days", "0"])
+        assert result.exit_code == EXIT_ARGS
+
+    def test_incompatible_schema(self, config_file: Path) -> None:
+        db_path = config_file.parent / "db" / "analysis.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(db_path))
-        conn.execute(
-            """
-            CREATE TABLE analyzed_commits (
-                sha TEXT NOT NULL,
-                repo_url TEXT NOT NULL,
-                analyzed_at TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'success',
-                summary TEXT,
-                files_count INTEGER DEFAULT 0,
-                chunks_count INTEGER DEFAULT 0,
-                PRIMARY KEY (sha, repo_url)
-            );
-            """
+        conn.executescript(
+            "CREATE TABLE schema_version (version INTEGER NOT NULL);"
+            "INSERT INTO schema_version VALUES (2);"
         )
         conn.commit()
         conn.close()
 
-        # Initialize should add columns without error
-        db = DatabaseManager(db_dir)
+        result = runner.invoke(app, ["main", "--config", str(config_file)])
+        assert result.exit_code == EXIT_SCHEMA
+
+
+class TestReportFromDb:
+    def _seed(self, config_file: Path) -> None:
+        settings = Settings.from_file(config_file)
+        db = DatabaseManager(settings.analysis_db_path)
         db.initialize()
-
-        # Should be able to save with author/message
-        from scan_git_push.github_client import CommitData, FileChange
-        from datetime import datetime, timezone
-
-        commit_date = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
-        db.save_commit_analysis(
-            commit_sha="abc123",
-            repo_url="https://github.com/o/r",
-            analyzed_at=commit_date,
-            summary="Test summary",
-            files=[
-                FileChange(
-                    filename="test.py",
-                    status="modified",
-                    additions=5,
-                    deletions=2,
-                    patch="",
-                ),
-            ],
-            chunks_count=1,
+        project_id = db.ensure_project(settings.scan.git_projects[0])
+        commit = CommitData(
+            sha="abc123def456",
             author="testuser",
-            message="Test commit",
+            date=datetime.now(timezone.utc),
+            message="Stored commit",
+            files=[FileChange(path="test.py", additions=5, deletions=2)],
+        )
+        db.save_commit_analysis(
+            project_id=project_id,
+            commit=commit,
+            summary="Stored summary",
+            chunks_count=1,
         )
 
-        analyses = db.get_recent_analyses("https://github.com/o/r", days=7)
-        assert len(analyses) == 1
-        assert analyses[0]["author"] == "testuser"
-        assert analyses[0]["message"] == "Test commit"
+    def test_empty_database(self, config_file: Path) -> None:
+        settings = Settings.from_file(config_file)
+        DatabaseManager(settings.analysis_db_path).initialize()
 
+        result = runner.invoke(
+            app, ["report-from-db", "--config", str(config_file), "--days", "30"]
+        )
+        assert result.exit_code == EXIT_OK
+        assert "No projects found in database" in result.output
+
+    def test_with_data(self, config_file: Path) -> None:
+        self._seed(config_file)
+        result = runner.invoke(
+            app,
+            [
+                "report-from-db",
+                "--config",
+                str(config_file),
+                "--days",
+                "30",
+                "--json",
+            ],
+        )
+        assert result.exit_code == EXIT_OK, result.output
+        payload = json.loads(result.output[result.output.index("{") :])
+        assert payload["model"] == {}
+        commits = payload["projects"][0]["commits"]
+        assert commits[0]["sha"] == "abc123def456"
+        assert commits[0]["summary"] == "Stored summary"
+        assert Path(payload["projects"][0]["reports"]["markdown"]).exists()
+
+    def test_unknown_project_is_skipped(self, config_file: Path) -> None:
+        settings = Settings.from_file(config_file)
+        DatabaseManager(settings.analysis_db_path).initialize()
+
+        result = runner.invoke(
+            app,
+            [
+                "report-from-db",
+                "--config",
+                str(config_file),
+                "--project",
+                "https://github.com/unknown/repo",
+            ],
+        )
+        assert result.exit_code == EXIT_OK
+        assert "not found in DB" in result.output
+
+
+def _today() -> str:
+    return datetime.now().strftime("%Y%m%d")

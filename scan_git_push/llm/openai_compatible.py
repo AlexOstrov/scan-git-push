@@ -1,8 +1,8 @@
 """Generic OpenAI-compatible LLM provider.
 
 Works with any service that exposes an OpenAI-compatible ``/chat/completions``
-endpoint (Groq, OpenAI, Azure AI Foundry, vLLM, ...). Implemented with plain
-``httpx`` so parsing does not depend on the ``openai`` SDK quirks.
+endpoint (Mistral AI, vLLM, ...). Implemented with plain ``httpx`` so parsing
+does not depend on the ``openai`` SDK quirks.
 """
 
 from __future__ import annotations
@@ -26,18 +26,27 @@ class OpenAICompatibleProvider(LLMProvider):
     DEFAULT_MODEL: str = ""
     KNOWN_MODELS: list[str] = []
     PROBE_MODEL: str = ""
-    _HTTP_TIMEOUT: float = 30.0
 
     def __init__(
         self,
         model: str | None = None,
         endpoint: str | None = None,
         token: str = "",
+        http_timeout: float = 30.0,
+        max_retries: int = 3,
+        backoff_factor: float = 2.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(model or self.DEFAULT_MODEL, **kwargs)
         self.endpoint = (endpoint or self.DEFAULT_ENDPOINT).rstrip("/")
         self.token = token
+        self.timeout = http_timeout
+        self.max_retries = max_retries
+        self.backoff_factor = backoff_factor
+
+    @property
+    def provider_name(self) -> str:
+        return self.PROVIDER_NAME
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -56,7 +65,7 @@ class OpenAICompatibleProvider(LLMProvider):
             f"{self.endpoint}/chat/completions",
             headers=self._headers,
             json=payload,
-            timeout=self._HTTP_TIMEOUT,
+            timeout=self.timeout,
         )
         resp.raise_for_status()
         return resp.json()
@@ -96,7 +105,7 @@ class OpenAICompatibleProvider(LLMProvider):
             resp = httpx.get(
                 f"{self.endpoint}/models",
                 headers=self._headers,
-                timeout=self._HTTP_TIMEOUT,
+                timeout=self.timeout,
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -125,7 +134,11 @@ class OpenAICompatibleProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        data = self._retry_with_backoff(lambda: self._post_chat(messages))
+        data = self._retry_with_backoff(
+            lambda: self._post_chat(messages),
+            max_retries=self.max_retries,
+            backoff_factor=self.backoff_factor,
+        )
 
         try:
             choice = data["choices"][0]

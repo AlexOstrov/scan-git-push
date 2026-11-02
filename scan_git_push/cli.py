@@ -1,577 +1,798 @@
-"""CLI entry point for scan-git-push with model selection and progress tracking."""
+"""CLI entry point: multi-project analysis over local git mirrors."""
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import sys
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import typer
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from loguru import logger
+from pydantic import ValidationError
+from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+)
 
-from scan_git_push.analyzer import CommitAnalyzer, AnalysisResult
-from scan_git_push.config import Settings
-from scan_git_push.github_client import GitHubClient, FileChange
-from scan_git_push.llm.ollama import OllamaProvider
-from scan_git_push.llm.github_models import GitHubModelsProvider
-from scan_git_push.llm.groq import GroqProvider
-from scan_git_push.llm.mistral import MistralProvider
+from scan_git_push import __version__
+from scan_git_push.analysis.collector import CommitCollector, ProjectCommits
+from scan_git_push.analysis.linker import RequirementLinker
+from scan_git_push.analysis.results import results_from_rows
+from scan_git_push.analyzer import AnalysisResult, CommitAnalyzer
+from scan_git_push.config import ConfigError, Settings
+from scan_git_push.database import DatabaseManager, DatabaseError, SchemaVersionError
+from scan_git_push.git.errors import GitAuthError, GitError, GitUnavailableError
+from scan_git_push.git.mirror import MirrorManager
+from scan_git_push.git.runner import ensure_git_available
+from scan_git_push.git.url import repo_name, url_key
+from scan_git_push.llm.registry import ModelOption, ModelRegistry
 from scan_git_push.memory.manager import MemoryManager
-from scan_git_push.database import DatabaseManager
-from scan_git_push.reporters.console import ConsoleReporter
-from scan_git_push.reporters.markdown import MarkdownReporter
-from scan_git_push.reporters.html import HTMLReporter
+from scan_git_push.reporters.service import ProjectReport, ReportService
+from scan_git_push.reporters.summary import ProjectSection
+from scan_git_push.scan.database import ScanDatabaseError, ScanSchemaVersionError
+from scan_git_push.scan.scanner import (
+    ScanOptions,
+    Scanner,
+    json_payload as scan_json_payload,
+)
 
 app = typer.Typer(
     name="scan-git-push",
     help="Analyze git push changes with LLM-powered commit summaries.",
     add_completion=False,
+    invoke_without_command=True,
 )
-console = Console()
+
+EXIT_OK = 0
+EXIT_CONFIG = 1
+EXIT_AUTH = 2
+EXIT_NO_MODEL = 3
+EXIT_ARGS = 4
+EXIT_REPO_UNAVAILABLE = 5
+EXIT_MISSING_KEY = 8
+EXIT_DB = 9
+EXIT_STRICT = 10
+EXIT_PARTIAL = 11
+EXIT_SCHEMA = 12
 
 
-def _extract_repo_name(url: str) -> str:
-    """Extract repository name from GitHub URL."""
-    return url.rstrip("/").split("/")[-1].removesuffix(".git")
+@dataclass
+class RunState:
+    """Mutable state accumulated during a run."""
+
+    sections: list[ProjectSection] = field(default_factory=list)
+    reports: list[ProjectReport] = field(default_factory=list)
+    errors: list[dict[str, str]] = field(default_factory=list)
+    analyzed_now: int = 0
+    auth_failures: int = 0
+    failed_projects: int = 0
+    analysis_failures: int = 0
 
 
-def _check_secrets(settings: Settings) -> None:
-    """Validate secrets file exists and contains required tokens."""
-    secrets_path = Path(settings.secrets_path)
-    if not secrets_path.exists():
-        console.print(f"[red]Error: Secrets file not found: {secrets_path}[/red]")
-        raise typer.Exit(code=1)
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _make_console(json_output: bool) -> Console:
+    """Send human-readable output to stderr when JSON is requested."""
+    return Console(stderr=json_output)
 
-    # GITHUB_TOKEN is always required to read the repository.
+
+def _load_settings(config_path: Optional[str]) -> Settings:
     try:
-        token = settings.github_token
-        if not token:
-            raise ValueError("GITHUB_TOKEN is empty")
-    except (KeyError, ValueError) as exc:
+        return Settings.from_file(config_path or "config.json")
+    except FileNotFoundError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=EXIT_CONFIG) from exc
+    except (ConfigError, ValidationError, ValueError) as exc:
+        typer.echo(f"Error: invalid configuration: {exc}", err=True)
+        raise typer.Exit(code=EXIT_CONFIG) from exc
+
+
+def _setup_logging(settings: Settings) -> None:
+    path = settings.analysis_log_path
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        logger.add(
+            path,
+            level="DEBUG",
+            rotation="10 MB",
+            retention="30 days",
+            encoding="utf-8",
+            enqueue=False,
+        )
+    except OSError as exc:  # logging must never break the run
+        logger.warning("Cannot create log file {}: {}", path, exc)
+
+
+def _setup_scan_logging(settings: Settings, verbose: bool) -> None:
+    """Configure ``scan`` logging: file DEBUG always, console only with --verbose."""
+    logger.remove()
+    logger.configure(extra={"url_key": "-"})
+    fmt = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {extra[url_key]} | {message}"
+    if verbose:
+        logger.add(sys.stderr, level="DEBUG", format=fmt)
+
+    path = settings.scan_log_path
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        logger.add(
+            path,
+            level="DEBUG",
+            rotation="10 MB",
+            retention="30 days",
+            encoding="utf-8",
+            format=fmt,
+            enqueue=False,
+        )
+    except OSError as exc:  # logging must never break the run
+        logger.warning("Cannot create log file {}: {}", path, exc)
+
+
+def _open_database(settings: Settings) -> DatabaseManager:
+    db = DatabaseManager(settings.analysis_db_path)
+    try:
+        db.initialize()
+    except SchemaVersionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=EXIT_SCHEMA) from exc
+    except (DatabaseError, sqlite3.Error) as exc:
+        typer.echo(f"Error: database failure: {exc}", err=True)
+        raise typer.Exit(code=EXIT_DB) from exc
+    return db
+
+
+def _resolve_projects(settings: Settings, projects: Optional[list[str]]) -> list[str]:
+    raw = list(projects or settings.scan.git_projects)
+    if not raw:
+        typer.echo(
+            "Error: no projects configured. Set SCAN.GIT_PROJECTS or pass --project.",
+            err=True,
+        )
+        raise typer.Exit(code=EXIT_CONFIG)
+
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in raw:
+        key = url_key(item, settings.base_dir)
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
+
+
+def _select_model(
+    registry: ModelRegistry,
+    console: Console,
+    model_spec: Optional[str],
+    non_interactive: bool,
+) -> tuple[ModelOption, Any]:
+    """Resolve the provider/model and verify that it is usable."""
+    try:
+        option = registry.resolve(model_spec)
+        if option is None and (non_interactive or registry.llm.non_interactive):
+            option = registry.default_option()
+        if option is None:
+            options = registry.discover()
+            if not options:
+                console.print(
+                    "[red]Error: no LLM models available. Start Ollama or set "
+                    "MISTRAL_API_KEY.[/red]"
+                )
+                raise typer.Exit(code=EXIT_NO_MODEL)
+            console.print("\n[bold cyan]Available LLM models:[/bold cyan]\n")
+            for index, item in enumerate(options, start=1):
+                console.print(f"  {index}. {item.label}")
+            console.print()
+            choice = typer.prompt("Select model number", type=int)
+            if choice < 1 or choice > len(options):
+                console.print("[red]Invalid selection.[/red]")
+                raise typer.Exit(code=EXIT_ARGS)
+            option = options[choice - 1]
+    except ValueError as exc:
         console.print(f"[red]Error: {exc}[/red]")
-        raise typer.Exit(code=2)
+        raise typer.Exit(code=EXIT_ARGS) from exc
 
-    # GITHUB_MODELS_TOKEN / GROQ_API_KEY are required only when their provider is selected.
-    if settings.llm_provider == "github_models":
-        _require_github_models_token(settings)
-    elif settings.llm_provider == "groq":
-        _require_groq_token(settings)
-    elif settings.llm_provider == "mistral":
-        _require_mistral_token(settings)
-
-
-def _require_github_models_token(settings: Settings) -> str:
-    """Validate that GITHUB_MODELS_TOKEN exists and is non-empty.
-
-    Returns the token on success, or exits with a clear error (code 6).
-    """
     try:
-        token = settings.github_models_token
+        provider = registry.build(option)
     except (FileNotFoundError, KeyError, ValueError) as exc:
         console.print(
-            f"[red]Error: GITHUB_MODELS_TOKEN is missing from the secrets file "
-            f"({settings.secrets_path}).\n"
-            f"Add it as: GITHUB_MODELS_TOKEN=<your_github_token>[/red]"
+            f"[red]Error: MISTRAL_API_KEY is required for the mistral provider "
+            f"({registry.settings.secrets_path}): {exc}[/red]"
         )
-        raise typer.Exit(code=6) from exc
+        raise typer.Exit(code=EXIT_MISSING_KEY) from exc
 
-    if not token:
-        console.print("[red]Error: GITHUB_MODELS_TOKEN is empty in the secrets file.[/red]")
-        raise typer.Exit(code=6)
-
-    return token
-
-
-def _try_github_models_token(settings: Settings) -> str | None:
-    """Return GITHUB_MODELS_TOKEN if present, otherwise None (best effort)."""
-    try:
-        return settings.github_models_token or None
-    except (FileNotFoundError, KeyError, ValueError):
-        return None
-
-
-def _require_groq_token(settings: Settings) -> str:
-    """Validate that GROQ_API_KEY exists and is non-empty.
-
-    Returns the token on success, or exits with a clear error (code 7).
-    """
-    try:
-        token = settings.groq_api_key
-    except (FileNotFoundError, KeyError, ValueError) as exc:
+    if not provider.is_available():
         console.print(
-            f"[red]Error: GROQ_API_KEY is missing from the secrets file "
-            f"({settings.secrets_path}).\n"
-            f"Add it as: GROQ_API_KEY=<your_groq_key>[/red]"
+            f"[red]Error: model {option.spec} is not available. "
+            f"Check the provider endpoint or start Ollama.[/red]"
         )
-        raise typer.Exit(code=7) from exc
+        raise typer.Exit(code=EXIT_NO_MODEL)
 
-    if not token:
-        console.print("[red]Error: GROQ_API_KEY is empty in the secrets file.[/red]")
-        raise typer.Exit(code=7)
+    console.print(
+        f"  Selected model: [bold]{option.provider}[/bold] / [bold]{option.model}[/bold]\n"
+    )
+    return option, provider
 
-    return token
+
+def _json_payload(
+    days: int,
+    option: ModelOption,
+    state: RunState,
+    summary: Optional[dict[str, str]],
+    exit_code: int,
+) -> dict[str, Any]:
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "days": days,
+        "model": {"provider": option.provider, "model": option.model},
+        "projects": [
+            {
+                "project": section.url,
+                "name": section.name,
+                "commits": [
+                    {
+                        "sha": result.sha,
+                        "author": result.author,
+                        "date": result.date,
+                        "message": result.message,
+                        "summary": result.summary,
+                        "files": [
+                            {
+                                "path": file.path,
+                                "status": file.status,
+                                "additions": file.additions,
+                                "deletions": file.deletions,
+                                "is_binary": file.is_binary,
+                            }
+                            for file in result.file_changes
+                        ],
+                        "additions": result.additions,
+                        "deletions": result.deletions,
+                        "chunks": result.chunks_analyzed,
+                        "requirements": result.requirement_labels,
+                    }
+                    for result in section.results
+                ],
+                "reports": next(
+                    (
+                        report.to_dict()
+                        for report in state.reports
+                        if report.url == section.url
+                    ),
+                    {},
+                ),
+            }
+            for section in state.sections
+        ],
+        "summary": summary or {},
+        "errors": state.errors,
+        "analyzed_now": state.analyzed_now,
+        "exit_code": exit_code,
+    }
 
 
-def _try_groq_token(settings: Settings) -> str | None:
-    """Return GROQ_API_KEY if present, otherwise None (best effort)."""
+# ---------------------------------------------------------------------------
+# Analysis run
+# ---------------------------------------------------------------------------
+def run_analysis(
+    config_path: Optional[str],
+    projects: Optional[list[str]],
+    days: Optional[int],
+    model_spec: Optional[str],
+    non_interactive: bool,
+    json_output: bool,
+    reanalyze: bool,
+) -> None:
+    """Shared implementation of ``main`` / ``analyze``."""
+    console = _make_console(json_output)
+    console.print(f"[bold green]scan-git-push[/bold green] v{__version__}\n")
+
+    settings = _load_settings(config_path)
+    _setup_logging(settings)
+
     try:
-        return settings.groq_api_key or None
-    except (FileNotFoundError, KeyError, ValueError):
-        return None
+        ensure_git_available()
+    except GitUnavailableError as exc:
+        console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(code=EXIT_CONFIG) from exc
 
+    report_days = days if days is not None else settings.analysis.git_day
+    if report_days < 1 or report_days > 365:
+        console.print("[red]Error: --days must be between 1 and 365[/red]")
+        raise typer.Exit(code=EXIT_ARGS)
 
-def _require_mistral_token(settings: Settings) -> str:
-    """Validate that MISTRAL_API_KEY exists and is non-empty.
+    project_refs = _resolve_projects(settings, projects)
+    db = _open_database(settings)
 
-    Returns the token on success, or exits with a clear error (code 8).
-    """
-    try:
-        token = settings.mistral_api_key
-    except (FileNotFoundError, KeyError, ValueError) as exc:
+    registry = ModelRegistry(settings)
+    option, provider = _select_model(registry, console, model_spec, non_interactive)
+
+    mirror = MirrorManager(settings.mirror_dir, settings.scan.mirror_filter)
+    collector = CommitCollector(mirror, settings.analysis)
+    analyzer = CommitAnalyzer(
+        llm_provider=provider,
+        max_chunk_chars=settings.analysis.max_diff_chars_per_chunk,
+        max_patch_chars_per_file=settings.analysis.max_patch_chars_per_file,
+        max_retries=settings.analysis.max_chunk_retries,
+        backoff_factor=settings.analysis.backoff_factor,
+    )
+    linker = RequirementLinker(
+        settings.scan_db_path if settings.analysis.link_requirements else None
+    )
+    report_service = ReportService(console, settings.output_dir)
+
+    state = RunState()
+    progress_enabled = not json_output
+
+    for ref in project_refs:
+        display = ref
+        try:
+            project = collector.collect(ref, base_dir=settings.base_dir, days=report_days)
+            display = project.display_url
+            project_id = db.ensure_project(ref, base_dir=settings.base_dir)
+        except GitAuthError as exc:
+            state.auth_failures += 1
+            state.failed_projects += 1
+            state.errors.append(
+                {"project": display, "type": "auth", "error": str(exc)}
+            )
+            console.print(f"[red]Auth error for {display}: {exc}[/red]")
+            continue
+        except (GitError, OSError) as exc:
+            state.failed_projects += 1
+            state.errors.append(
+                {"project": display, "type": "git", "error": str(exc)}
+            )
+            console.print(f"[red]Cannot access {display}: {exc}[/red]")
+            continue
+        except sqlite3.Error as exc:
+            console.print(f"[red]Database failure: {exc}[/red]")
+            raise typer.Exit(code=EXIT_DB) from exc
+
+        commits = project.commits
+        if not reanalyze:
+            commits = db.filter_unanalyzed(commits, project_id)
+        skipped = len(project.commits) - len(commits)
         console.print(
-            f"[red]Error: MISTRAL_API_KEY is missing from the secrets file "
-            f"({settings.secrets_path}).\n"
-            f"Add it as: MISTRAL_API_KEY=<your_mistral_key>[/red]"
+            f"[bold]{project.name}[/bold]: {len(project.commits)} commit(s) in period, "
+            f"{len(commits)} to analyze"
+            + (f", {skipped} already analyzed" if skipped else "")
         )
-        raise typer.Exit(code=8) from exc
 
-    if not token:
-        console.print("[red]Error: MISTRAL_API_KEY is empty in the secrets file.[/red]")
-        raise typer.Exit(code=8)
+        completed: list[AnalysisResult] = []
+        if commits:
+            progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+                console=console,
+                disable=not progress_enabled,
+            )
+            with progress:
+                task = progress.add_task("Analyzing commits...", total=len(commits))
+                for commit in commits:
+                    progress.update(task, description=f"Analyzing {commit.sha[:8]}...")
+                    try:
+                        collector.attach_patches(project, commit)
+                        result = analyzer.analyze_commit(commit)
+                        db.save_commit_analysis(
+                            project_id=project_id,
+                            commit=commit,
+                            summary=result.summary,
+                            chunks_count=result.chunks_analyzed,
+                            provider=option.provider,
+                            model=option.model,
+                            prompt_version=settings.analysis.prompt_version,
+                        )
+                        result.project = project.display_url
+                        result.project_name = project.name
+                        completed.append(result)
+                        state.analyzed_now += 1
+                    except Exception as exc:  # one bad commit must not stop the run
+                        state.analysis_failures += 1
+                        logger.exception("Failed to analyze commit {}", commit.sha[:8])
+                        console.print(
+                            f"  [yellow]Warning: skipped commit {commit.sha[:8]}: {exc}[/yellow]"
+                        )
+                    progress.advance(task)
 
-    return token
+        # Reports always come from the database, so a re-run without new commits
+        # still produces a complete report for the period.
+        rows = db.get_analyses([project_id], report_days)
+        results = results_from_rows(rows)
+        for result in results:
+            result.project = project.display_url
+            result.project_name = project.name
+        linker.attach(project.key, results)
+
+        report = report_service.generate_project(
+            project.name, project.display_url, results, report_days
+        )
+        state.reports.append(report)
+        state.sections.append(
+            ProjectSection(name=project.name, url=project.display_url, results=results)
+        )
+        console.print(
+            f"  Markdown: [green]{report.markdown}[/green]\n"
+            f"  HTML:     [green]{report.html}[/green]\n"
+        )
+
+    if not state.sections:
+        console.print("[red]Error: no project could be processed.[/red]")
+        raise typer.Exit(
+            code=EXIT_AUTH if state.auth_failures else EXIT_REPO_UNAVAILABLE
+        )
+
+    summary = report_service.generate_summary(state.sections, report_days)
+    console.print(f"  Summary:  [green]{summary.markdown}[/green]")
+
+    deleted = db.cleanup_old_records(settings.analysis.db_retention_days)
+    if deleted:
+        console.print(
+            f"  [dim]Cleaned up {deleted} old record(s) "
+            f"(older than {settings.analysis.db_retention_days} days)[/dim]"
+        )
+
+    if state.analyzed_now:
+        memory = MemoryManager(settings.memory_dir)
+        memory.ensure_files()
+        memory.append_changelog(
+            f"Analyzed {state.analyzed_now} commit(s) in {len(state.sections)} project(s) "
+            f"using {option.provider}/{option.model}"
+        )
+
+    exit_code = EXIT_PARTIAL if (state.failed_projects or state.analysis_failures) else EXIT_OK
+    payload = _json_payload(report_days, option, state, summary.to_dict(), exit_code)
+
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        console.print("\n[bold green]Done![/bold green]")
+
+    if exit_code != EXIT_OK:
+        raise typer.Exit(code=exit_code)
 
 
-def _try_mistral_token(settings: Settings) -> str | None:
-    """Return MISTRAL_API_KEY if present, otherwise None (best effort)."""
+# ---------------------------------------------------------------------------
+# Scan run
+# ---------------------------------------------------------------------------
+def run_scan(
+    config_path: Optional[str],
+    projects: Optional[list[str]],
+    branches: Optional[list[str]],
+    all_branches: bool,
+    include_extra: Optional[list[str]],
+    exclude_extra: Optional[list[str]],
+    max_file_size: Optional[int],
+    dry_run: bool,
+    force: bool,
+    strict: Optional[bool],
+    json_output: bool,
+    no_color: bool,
+    verbose: bool,
+) -> None:
+    """Shared implementation of ``scan`` and the deprecated ``--scan`` alias."""
+    console = Console(stderr=json_output, no_color=no_color)
+    console.print(f"[bold green]scan-git-push[/bold green] (scan) v{__version__}\n")
+
+    if max_file_size is not None and max_file_size < 0:
+        console.print("[red]Error: --max-file-size must be >= 0[/red]")
+        raise typer.Exit(code=EXIT_ARGS)
+
     try:
-        return settings.mistral_api_key or None
-    except (FileNotFoundError, KeyError, ValueError):
-        return None
+        settings = _load_settings(config_path)
+        ensure_git_available()
+    except typer.Exit as exc:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "error": "configuration error", "exit_code": exc.exit_code},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        raise
+    except GitUnavailableError as exc:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "error": str(exc), "exit_code": EXIT_CONFIG},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(code=EXIT_CONFIG) from exc
+
+    _setup_scan_logging(settings, verbose)
+
+    options = ScanOptions(
+        projects=projects,
+        branches=branches,
+        all_branches=all_branches,
+        include_extra=list(include_extra or []),
+        exclude_extra=list(exclude_extra or []),
+        max_file_size=max_file_size,
+        dry_run=dry_run,
+        force=force,
+        strict=strict,
+    )
+    scanner = Scanner(
+        settings,
+        options,
+        console,
+        verbose=verbose,
+        show_progress=not json_output,
+    )
+
+    try:
+        outcome = scanner.run()
+    except (ConfigError, ValueError) as exc:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "error": str(exc), "exit_code": EXIT_CONFIG},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(code=EXIT_CONFIG) from exc
+    except ScanSchemaVersionError as exc:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "error": str(exc), "exit_code": EXIT_SCHEMA},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[red]Error: {exc}[/red]")
+        raise typer.Exit(code=EXIT_SCHEMA) from exc
+    except (ScanDatabaseError, sqlite3.Error) as exc:
+        if json_output:
+            typer.echo(
+                json.dumps(
+                    {"status": "error", "error": f"database failure: {exc}", "exit_code": EXIT_DB},
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        else:
+            console.print(f"[red]Error: database failure: {exc}[/red]")
+        raise typer.Exit(code=EXIT_DB) from exc
+
+    if json_output:
+        typer.echo(scan_json_payload(outcome))
+    else:
+        console.print(
+            "\n[bold green]Done![/bold green] "
+            "[dim]scan.db is up to date[/dim]"
+        )
+
+    raise typer.Exit(code=outcome.exit_code)
 
 
-def _prompt_model_selection(
-    ollama_models: list[str],
-    gh_models: list[str],
-    groq_models: list[str] | None = None,
-    mistral_models: list[str] | None = None,
-) -> tuple[str, str]:
-    """Prompt user to select a model. Returns (provider, model_name)."""
-    console.print("\n[bold cyan]Available LLM models:[/bold cyan]\n")
-
-    options: list[tuple[str, str, str]] = []
-
-    for m in ollama_models:
-        options.append(("ollama", m, f"[Ollama] {m}"))
-    for m in gh_models:
-        options.append(("github_models", m, f"[GitHub Models] {m}"))
-    for m in groq_models or []:
-        options.append(("groq", m, f"[Groq] {m}"))
-    for m in mistral_models or []:
-        options.append(("mistral", m, f"[Mistral] {m}"))
-
-    if not options:
-        console.print("[red]Error: No models available from any provider.[/red]")
-        raise typer.Exit(code=3)
-
-    for i, (_, _, label) in enumerate(options, start=1):
-        console.print(f"  {i}. {label}")
-
-    console.print()
-    choice = typer.prompt("Select model number", type=int)
-
-    if choice < 1 or choice > len(options):
-        console.print("[red]Invalid selection.[/red]")
-        raise typer.Exit(code=4)
-
-    provider_name, model_name, _ = options[choice - 1]
-    return provider_name, model_name
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
+@app.callback(invoke_without_command=True)
+def _default(
+    ctx: typer.Context,
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config.json"),
+) -> None:
+    """Run analysis when no subcommand is given."""
+    if ctx.invoked_subcommand is None:
+        run_analysis(
+            config_path=config_path,
+            projects=None,
+            days=None,
+            model_spec=None,
+            non_interactive=False,
+            json_output=False,
+            reanalyze=False,
+        )
 
 
 @app.command()
 def main(
-    config_path: Optional[str] = typer.Option(
-        None, "--config", "-c", help="Path to config.json"
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config.json"),
+    projects: Optional[list[str]] = typer.Option(
+        None, "--project", "-p", help="Project URL/path (repeatable); overrides SCAN.GIT_PROJECTS"
     ),
+    days: Optional[int] = typer.Option(None, "--days", "-d", help="Days to look back"),
+    model_spec: Optional[str] = typer.Option(
+        None, "--model", "-m", help="Model as provider/model (ollama/..., mistral/...)"
+    ),
+    non_interactive: bool = typer.Option(
+        False, "--non-interactive", help="Never prompt; use configured default model"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result"),
+    reanalyze: bool = typer.Option(False, "--reanalyze", help="Re-analyze commits already in the DB"),
 ) -> None:
-    """Analyze git push changes with LLM-powered commit summaries."""
-    console.print("[bold green]scan-git-push[/bold green] v0.1.0\n")
-
-    # Load configuration
-    try:
-        settings = Settings.from_file(config_path or "config.json")
-    except FileNotFoundError as exc:
-        console.print(f"[red]Error: {exc}[/red]")
-        raise typer.Exit(code=1)
-
-    if not settings.git_project:
-        console.print("[red]Error: GIT_PROJECT is not set in config[/red]")
-        raise typer.Exit(code=1)
-
-    # Validate secrets
-    _check_secrets(settings)
-
-    # Initialize artifact database
-    db = DatabaseManager(settings.db_path)
-    db.initialize()
-
-    # Check provider availability. Both providers are queried best-effort so the
-    # user can switch between them at runtime by picking any listed model.
-    console.print("[bold]Checking LLM provider availability...[/bold]\n")
-
-    ollama_models: list[str] = []
-    gh_models: list[str] = []
-
-    # Ollama (local) — no token required.
-    ollama_provider = OllamaProvider(model="", base_url=settings.ollama_base_url)
-    if ollama_provider.is_available():
-        ollama_models = ollama_provider.list_models()
-        console.print(
-            f"  [green]Ollama[/green] available at {settings.ollama_base_url} "
-            f"({len(ollama_models)} model(s))"
-        )
-    else:
-        console.print(
-            f"  [dim]Ollama[/dim] not available at {settings.ollama_base_url} — skipped"
-        )
-
-    # GitHub Models API — token required when selected via config, optional otherwise.
-    gh_models_token: str | None
-    if settings.llm_provider == "github_models":
-        gh_models_token = _require_github_models_token(settings)
-    else:
-        gh_models_token = _try_github_models_token(settings)
-
-    if gh_models_token:
-        gh_provider = GitHubModelsProvider(
-            model=settings.gh_models_model,
-            endpoint=settings.gh_models_endpoint,
-            token=gh_models_token,
-        )
-        if gh_provider.is_available():
-            gh_models = gh_provider.list_models()
-            console.print(
-                f"  [green]GitHub Models API[/green] available ({len(gh_models)} model(s))"
-            )
-        else:
-            console.print("  [dim]GitHub Models API[/dim] not reachable — skipped")
-    else:
-        console.print("  [dim]GitHub Models API[/dim] skipped (no GITHUB_MODELS_TOKEN)")
-
-    # Groq — token required when selected via config, optional otherwise.
-    groq_models: list[str] = []
-    if settings.llm_provider == "groq":
-        groq_token = _require_groq_token(settings)
-    else:
-        groq_token = _try_groq_token(settings)
-
-    if groq_token:
-        groq_provider = GroqProvider(
-            model=settings.groq_model,
-            endpoint=settings.groq_endpoint,
-            token=groq_token,
-        )
-        if groq_provider.is_available():
-            groq_models = groq_provider.list_models()
-            console.print(f"  [green]Groq[/green] available ({len(groq_models)} model(s))")
-        else:
-            console.print("  [dim]Groq[/dim] not reachable — skipped")
-    else:
-        console.print("  [dim]Groq[/dim] skipped (no GROQ_API_KEY)")
-
-    # Mistral — token required when selected via config, optional otherwise.
-    mistral_models: list[str] = []
-    if settings.llm_provider == "mistral":
-        mistral_token = _require_mistral_token(settings)
-    else:
-        mistral_token = _try_mistral_token(settings)
-
-    if mistral_token:
-        mistral_provider = MistralProvider(
-            model=settings.mistral_model,
-            endpoint=settings.mistral_endpoint,
-            token=mistral_token,
-        )
-        if mistral_provider.is_available():
-            mistral_models = mistral_provider.list_models()
-            console.print(
-                f"  [green]Mistral[/green] available ({len(mistral_models)} model(s))"
-            )
-        else:
-            console.print("  [dim]Mistral[/dim] not reachable — skipped")
-    else:
-        console.print("  [dim]Mistral[/dim] skipped (no MISTRAL_API_KEY)")
-
-    if not ollama_models and not gh_models and not groq_models and not mistral_models:
-        console.print("[red]Error: No LLM models available from any provider.[/red]")
-        raise typer.Exit(code=3)
-
-    # Model selection (provider is chosen here, at runtime)
-    provider_name, model_name = _prompt_model_selection(
-        ollama_models, gh_models, groq_models, mistral_models
+    """Analyze commits from one or more projects (alias: analyze)."""
+    run_analysis(
+        config_path, projects, days, model_spec, non_interactive, json_output, reanalyze
     )
-    console.print(f"\n  Selected: [bold]{provider_name}[/bold] / [bold]{model_name}[/bold]\n")
-
-    # Create LLM provider instance
-    if provider_name == "ollama":
-        llm = OllamaProvider(
-            model=model_name,
-            base_url=settings.ollama_base_url,
-            max_retries=settings.max_retries,
-            backoff_factor=settings.backoff_factor,
-        )
-    elif provider_name == "github_models":
-        llm = GitHubModelsProvider(
-            model=model_name,
-            endpoint=settings.gh_models_endpoint,
-            token=settings.github_models_token,
-            max_retries=settings.max_retries,
-            backoff_factor=settings.backoff_factor,
-        )
-    elif provider_name == "groq":
-        llm = GroqProvider(
-            model=model_name,
-            endpoint=settings.groq_endpoint,
-            token=settings.groq_api_key,
-            max_retries=settings.max_retries,
-            backoff_factor=settings.backoff_factor,
-        )
-    else:
-        llm = MistralProvider(
-            model=model_name,
-            endpoint=settings.mistral_endpoint,
-            token=settings.mistral_api_key,
-            max_retries=settings.max_retries,
-            backoff_factor=settings.backoff_factor,
-        )
-
-    # Fetch commits
-    console.print(f"[bold]Fetching commits from {settings.git_project} (last {settings.git_days} days)...[/bold]\n")
-
-    gh_client = GitHubClient(
-        token=settings.github_token,
-        repo_url=settings.git_project,
-        max_retries=settings.max_retries,
-        backoff_factor=settings.backoff_factor,
-        timeout=settings.http_timeout,
-    )
-
-    try:
-        commits = gh_client.get_commits(days=settings.git_days)
-    except Exception as exc:
-        console.print(f"[red]Error fetching commits: {exc}[/red]")
-        raise typer.Exit(code=5)
-
-    if not commits:
-        console.print("[yellow]No commits found in the specified period.[/yellow]")
-        raise typer.Exit(code=0)
-
-    # Filter out already analyzed commits
-    unanalyzed_commits = db.filter_unanalyzed(commits, settings.git_project)
-    skipped_count = len(commits) - len(unanalyzed_commits)
-    if skipped_count:
-        console.print(f"  [dim]Skipping [bold]{skipped_count}[/bold] already analyzed commit(s)[/dim]\n")
-
-    commits = unanalyzed_commits
-
-    if not commits:
-        console.print("[yellow]No new commits to analyze.[/yellow]")
-        raise typer.Exit(code=0)
-
-    console.print(f"  Found [bold]{len(commits)}[/bold] new commit(s) to analyze.\n")
-
-    # Analyze commits
-    analyzer = CommitAnalyzer(
-        llm_provider=llm,
-        max_chunk_chars=settings.max_diff_chars_per_chunk,
-        max_retries=settings.max_retries,
-        backoff_factor=settings.backoff_factor,
-    )
-
-    results: list[AnalysisResult] = []
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task = progress.add_task("Analyzing commits...", total=len(commits))
-
-        for commit in commits:
-            progress.update(task, description=f"Analyzing {commit.sha[:8]}...")
-            try:
-                result = analyzer.analyze_commit(commit)
-                results.append(result)
-                # Save to artifact database
-                db.save_commit_analysis(
-                    commit_sha=commit.sha,
-                    repo_url=settings.git_project,
-                    analyzed_at=commit.date,
-                    summary=result.summary,
-                    files=commit.files,
-                    chunks_count=result.chunks_analyzed,
-                    author=commit.author,
-                    message=commit.message,
-                )
-            except Exception as exc:
-                logger.error(f"Failed to analyze commit {commit.sha[:8]}: {exc}")
-                console.print(f"  [yellow]Warning: Skipped commit {commit.sha[:8]}: {exc}[/yellow]")
-            progress.advance(task)
-
-    # Generate reports
-    repo_name = _extract_repo_name(settings.git_project)
-
-    console.print("\n[bold]Generating reports...[/bold]\n")
-
-    # Console output
-    console_reporter = ConsoleReporter(console)
-    console_reporter.report(results, repo_name)
-
-    # Markdown report
-    md_path = MarkdownReporter().generate(
-        results=results,
-        repo_name=repo_name,
-        days=settings.git_days,
-        output_dir=settings.output_dir,
-    )
-    console.print(f"  Markdown: [green]{md_path}[/green]")
-
-    # HTML report
-    html_path = HTMLReporter().generate(
-        results=results,
-        repo_name=repo_name,
-        days=settings.git_days,
-        output_dir=settings.output_dir,
-    )
-    console.print(f"  HTML:     [green]{html_path}[/green]")
-
-    # Cleanup old records from the database
-    deleted = db.cleanup_old_records(settings.db_retention_days)
-    if deleted:
-        console.print(
-            f"  [dim]Cleaned up [bold]{deleted}[/bold] old record(s) "
-            f"(older than {settings.db_retention_days} days)[/dim]"
-        )
-
-    # Update artifact memory
-    memory_mgr = MemoryManager(settings.memory_dir)
-    memory_mgr.ensure_files()
-    memory_mgr.append_changelog(
-        f"Analyzed {len(results)} commits from {repo_name} using {provider_name}/{model_name}"
-    )
-
-    console.print("\n[bold green]Done![/bold green]")
 
 
 @app.command()
-def report_from_db(
-    config_path: Optional[str] = typer.Option(
-        None, "--config", "-c", help="Path to config.json"
+def analyze(
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config.json"),
+    projects: Optional[list[str]] = typer.Option(
+        None, "--project", "-p", help="Project URL/path (repeatable); overrides SCAN.GIT_PROJECTS"
     ),
-    days: Optional[int] = typer.Option(
-        None, "--days", "-d", help="Number of days to look back (overrides GIT_DAY)"
+    days: Optional[int] = typer.Option(None, "--days", "-d", help="Days to look back"),
+    model_spec: Optional[str] = typer.Option(
+        None, "--model", "-m", help="Model as provider/model (ollama/..., mistral/...)"
     ),
+    non_interactive: bool = typer.Option(
+        False, "--non-interactive", help="Never prompt; use configured default model"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result"),
+    reanalyze: bool = typer.Option(False, "--reanalyze", help="Re-analyze commits already in the DB"),
 ) -> None:
-    """Generate report from database without calling LLM.
-
-    Reads previously analyzed commits from the SQLite database and
-    produces console, Markdown and HTML reports. No LLM provider is needed.
-    """
-    console.print("[bold green]scan-git-push[/bold green] (report from DB) v0.1.0\n")
-
-    # Load configuration
-    try:
-        settings = Settings.from_file(config_path or "config.json")
-    except FileNotFoundError as exc:
-        console.print(f"[red]Error: {exc}[/red]")
-        raise typer.Exit(code=1)
-
-    if not settings.git_project:
-        console.print("[red]Error: GIT_PROJECT is not set in config[/red]")
-        raise typer.Exit(code=1)
-
-    # Initialize database (read-only mode — no LLM needed)
-    db = DatabaseManager(settings.db_path)
-    db.initialize()
-
-    report_days = days if days is not None else settings.git_days
-    console.print(
-        f"[bold]Generating report from DB for {settings.git_project} "
-        f"(last {report_days} days)...[/bold]\n"
+    """Analyze commits from one or more projects."""
+    run_analysis(
+        config_path, projects, days, model_spec, non_interactive, json_output, reanalyze
     )
 
-    # Fetch analyses from database
-    analyses = db.get_recent_analyses(settings.git_project, report_days)
 
-    if not analyses:
-        console.print("[yellow]No analyzed commits found in database.[/yellow]")
-        raise typer.Exit(code=0)
+@app.command("report-from-db")
+def report_from_db(
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config.json"),
+    projects: Optional[list[str]] = typer.Option(
+        None, "--project", "-p", help="Project URL/path (repeatable); default: all projects in DB"
+    ),
+    days: Optional[int] = typer.Option(None, "--days", "-d", help="Days to look back"),
+    json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result"),
+) -> None:
+    """Generate reports from the database without calling the LLM."""
+    console = _make_console(json_output)
+    console.print(f"[bold green]scan-git-push[/bold green] (report from DB) v{__version__}\n")
 
-    console.print(f"  Found [bold]{len(analyses)}[/bold] analyzed commit(s) in DB.\n")
+    settings = _load_settings(config_path)
+    _setup_logging(settings)
+    report_days = days if days is not None else settings.analysis.git_day
+    if report_days < 1 or report_days > 365:
+        console.print("[red]Error: --days must be between 1 and 365[/red]")
+        raise typer.Exit(code=EXIT_ARGS)
 
-    # Convert DB records to AnalysisResult objects for reporters
-    results: list[AnalysisResult] = []
-    for record in analyses:
-        files_records = db.get_commit_files(record["sha"], settings.git_project)
-        files = [
-            FileChange(
-                filename=fr["filename"],
-                status=fr["file_status"],
-                additions=fr["additions"],
-                deletions=fr["deletions"],
+    db = _open_database(settings)
+    known = db.list_projects()
+
+    selected: list[dict[str, Any]] = []
+    if projects:
+        for ref in projects:
+            key = url_key(ref, settings.base_dir)
+            match = next((item for item in known if item["url_key"] == key), None)
+            if match is None:
+                console.print(f"[yellow]Project not found in DB: {ref}[/yellow]")
+                continue
+            selected.append(match)
+    else:
+        selected = known
+
+    if not selected:
+        console.print("[yellow]No projects found in database.[/yellow]")
+        raise typer.Exit(code=EXIT_OK)
+
+    report_service = ReportService(console, settings.output_dir)
+    linker = RequirementLinker(
+        settings.scan_db_path if settings.analysis.link_requirements else None
+    )
+
+    state = RunState()
+    for project in selected:
+        rows = db.get_analyses([project["id"]], report_days)
+        results = results_from_rows(rows)
+        for result in results:
+            result.project = project["url"]
+            result.project_name = repo_name(project["url"], settings.base_dir)
+        linker.attach(project["url_key"], results)
+        if not results:
+            console.print(
+                f"[yellow]{project['url']}: no analyzed commits in the period.[/yellow]"
             )
-            for fr in files_records
-        ]
 
-        results.append(
-            AnalysisResult(
-                sha=record["sha"],
-                author=record.get("author") or "unknown",
-                date=record["analyzed_at"],
-                message=record.get("message") or "",
-                files=[f.filename for f in files],
-                summary=record.get("summary") or "",
-                chunks_analyzed=record.get("chunks_count") or 0,
-            )
+        name = repo_name(project["url"], settings.base_dir)
+        report = report_service.generate_project(
+            name, project["url"], results, report_days
+        )
+        state.reports.append(report)
+        state.sections.append(
+            ProjectSection(name=name, url=project["url"], results=results)
+        )
+        console.print(
+            f"  Markdown: [green]{report.markdown}[/green]\n"
+            f"  HTML:     [green]{report.html}[/green]\n"
         )
 
-        # Attach FileChange objects to results for reporters that need them
-        # (store as attribute for reporter access)
-        results[-1]._file_changes = files  # type: ignore[attr-defined]
+    summary = report_service.generate_summary(state.sections, report_days)
+    console.print(f"  Summary:  [green]{summary.markdown}[/green]")
 
-    # Generate reports
-    repo_name = _extract_repo_name(settings.git_project)
+    if json_output:
+        option = ModelOption(settings.llm.provider, settings.llm.model or "")
+        payload = _json_payload(
+            report_days, option, state, summary.to_dict(), EXIT_OK
+        )
+        payload["model"] = {}
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        console.print("\n[bold green]Done![/bold green]")
 
-    console.print("\n[bold]Generating reports...[/bold]\n")
 
-    # Console output
-    console_reporter = ConsoleReporter(console)
-    console_reporter.report(results, repo_name)
-
-    # Markdown report
-    md_path = MarkdownReporter().generate(
-        results=results,
-        repo_name=repo_name,
-        days=report_days,
-        output_dir=settings.output_dir,
+@app.command()
+def scan(
+    config_path: Optional[str] = typer.Option(None, "--config", "-c", help="Path to config.json"),
+    projects: Optional[list[str]] = typer.Option(
+        None, "--project", "-p", help="Project URL/path (repeatable); overrides SCAN.GIT_PROJECTS"
+    ),
+    branches: Optional[list[str]] = typer.Option(
+        None, "--branch", "-b", help="Branch to scan (repeatable)"
+    ),
+    all_branches: bool = typer.Option(
+        False, "--all-branches", help="Scan every branch (SCAN.BRANCHES=all)"
+    ),
+    include_extra: Optional[list[str]] = typer.Option(
+        None, "--include", help="Additional include glob (repeatable)"
+    ),
+    exclude_extra: Optional[list[str]] = typer.Option(
+        None, "--exclude", help="Additional exclude glob (repeatable)"
+    ),
+    max_file_size: Optional[int] = typer.Option(
+        None, "--max-file-size", help="Override SCAN.MAX_FILE_SIZE in bytes"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Full scan without writing to the database"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Ignore an active running scan and mark it failed"
+    ),
+    strict: bool = typer.Option(
+        False, "--strict", help="Incomplete markers produce exit code 10"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result"),
+    no_color: bool = typer.Option(False, "--no-color", help="Disable colors"),
+    verbose: bool = typer.Option(False, "--verbose", help="DEBUG output to the console"),
+) -> None:
+    """Scan repository files for REQ-META markers into scan.db."""
+    run_scan(
+        config_path,
+        projects,
+        branches,
+        all_branches,
+        include_extra,
+        exclude_extra,
+        max_file_size,
+        dry_run,
+        force,
+        strict or None,
+        json_output,
+        no_color,
+        verbose,
     )
-    console.print(f"  Markdown: [green]{md_path}[/green]")
 
-    # HTML report
-    html_path = HTMLReporter().generate(
-        results=results,
-        repo_name=repo_name,
-        days=report_days,
-        output_dir=settings.output_dir,
-    )
-    console.print(f"  HTML:     [green]{html_path}[/green]")
 
-    console.print("\n[bold green]Done![/bold green]")
+def main(argv: Optional[list[str]] = None) -> None:
+    """Entry point that also understands the deprecated ``--scan`` alias."""
+    args = list(sys.argv[1:] if argv is None else argv)
+    if "--scan" in args:
+        args = ["scan" if item == "--scan" else item for item in args]
+    app(args)
 
 
 if __name__ == "__main__":
-    app()
+    main()

@@ -1,249 +1,227 @@
-"""Tests for LLM provider modules."""
+"""Tests for LLM providers and model discovery."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
-import httpx
-
+from scan_git_push.llm.mistral import KNOWN_MISTRAL_MODELS, MistralProvider
 from scan_git_push.llm.ollama import OllamaProvider
-from scan_git_push.llm.github_models import GitHubModelsProvider, KNOWN_GITHUB_MODELS
-from scan_git_push.llm.groq import GroqProvider, KNOWN_GROQ_MODELS
-from scan_git_push.llm.mistral import MistralProvider, KNOWN_MISTRAL_MODELS
-from scan_git_push.llm.base import LLMResponse
+from scan_git_push.llm.registry import ModelOption, ModelRegistry
 
 
-def _mock_http_response(status_code: int, json_data=None):
-    """Create a mock httpx.Response."""
+def _response(status_code: int, payload: dict | None = None) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
-    resp.json.return_value = json_data or {}
+    resp.json.return_value = payload or {}
     resp.raise_for_status.return_value = None
     return resp
 
 
-def _mock_http_error(status_code: int):
-    """Create a mock httpx.Response that raises HTTPStatusError on raise_for_status."""
+def _http_error(status_code: int) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
     resp.json.return_value = {}
-    exc = httpx.HTTPStatusError(f"HTTP {status_code}", request=MagicMock(), response=resp)
-    resp.raise_for_status.side_effect = exc
+    resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        f"HTTP {status_code}", request=MagicMock(), response=resp
+    )
     return resp
 
 
 class TestOllamaProvider:
-    """Test OllamaProvider class."""
+    @patch("ollama.Client")
+    def test_is_available(self, client_cls: MagicMock) -> None:
+        client_cls.return_value.list.return_value = []
+        assert OllamaProvider(model="m").is_available() is True
 
     @patch("ollama.Client")
-    def test_is_available_success(self, mock_client_cls) -> None:
-        """Test availability check when Ollama is running."""
-        mock_client = MagicMock()
-        mock_client.list.return_value = []
-        mock_client_cls.return_value = mock_client
-
-        provider = OllamaProvider(model="test-model")
-        assert provider.is_available() is True
+    def test_is_available_failure(self, client_cls: MagicMock) -> None:
+        client_cls.return_value.list.side_effect = Exception("refused")
+        assert OllamaProvider(model="m").is_available() is False
 
     @patch("ollama.Client")
-    def test_is_available_failure(self, mock_client_cls) -> None:
-        """Test availability check when Ollama is not running."""
-        mock_client = MagicMock()
-        mock_client.list.side_effect = Exception("Connection refused")
-        mock_client_cls.return_value = mock_client
-
-        provider = OllamaProvider(model="test-model")
-        assert provider.is_available() is False
+    def test_list_models(self, client_cls: MagicMock) -> None:
+        model = MagicMock()
+        model.model = "llama3.1:8b"
+        client_cls.return_value.list.return_value = MagicMock(models=[model])
+        assert OllamaProvider(model="m").list_models() == ["llama3.1:8b"]
 
     @patch("ollama.Client")
-    def test_list_models(self, mock_client_cls) -> None:
-        """Test listing available Ollama models."""
-        mock_client = MagicMock()
-        mock_model1 = MagicMock()
-        mock_model1.model = "llama3.1:8b"
-        mock_model2 = MagicMock()
-        mock_model2.model = "gemma2:9b"
-        mock_client.list.return_value = MagicMock(models=[mock_model1, mock_model2])
-        mock_client_cls.return_value = mock_client
+    def test_generate(self, client_cls: MagicMock) -> None:
+        response = MagicMock()
+        response.message.content = "answer"
+        response.get.return_value = 7
+        client_cls.return_value.chat.return_value = response
 
-        provider = OllamaProvider(model="test-model")
-        models = provider.list_models()
+        result = OllamaProvider(model="test-model").generate("hi")
 
-        assert "llama3.1:8b" in models
-        assert "gemma2:9b" in models
+        assert result.text == "answer"
+        assert result.provider == "ollama"
+        assert result.model == "test-model"
+        assert result.usage == {"prompt_eval_count": 7, "eval_count": 7}
 
     @patch("ollama.Client")
-    def test_generate(self, mock_client_cls) -> None:
-        """Test generating a response via Ollama."""
-        mock_client = MagicMock()
-        mock_response = MagicMock()
-        mock_response.message.content = "Test response"
-        mock_response.get.return_value = 0
-        mock_client.chat.return_value = mock_response
-        mock_client_cls.return_value = mock_client
+    def test_generate_retries(self, client_cls: MagicMock) -> None:
+        response = MagicMock()
+        response.message.content = "ok"
+        response.get.return_value = 0
+        client_cls.return_value.chat.side_effect = [
+            RuntimeError("boom"),
+            response,
+        ]
 
-        provider = OllamaProvider(model="test-model")
-        response = provider.generate("Test prompt")
-
-        assert isinstance(response, LLMResponse)
-        assert response.text == "Test response"
-        assert response.model == "test-model"
-        assert response.provider == "ollama"
-
-
-class TestGitHubModelsProvider:
-    """Test GitHubModelsProvider class."""
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_is_available_success(self, mock_post) -> None:
-        """Test availability check when API is reachable."""
-        mock_post.return_value = _mock_http_response(200, {"choices": [{"x": 1}]})
-
-        provider = GitHubModelsProvider(model="test-model", token="test-token")
-        assert provider.is_available() is True
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_is_available_failure(self, mock_post) -> None:
-        """Test availability check when API is not reachable."""
-        mock_post.side_effect = Exception("Auth failed")
-
-        provider = GitHubModelsProvider(model="test-model", token="bad-token")
-        assert provider.is_available() is False
-
-    def test_is_available_without_token(self) -> None:
-        """No token means the provider is not available."""
-        provider = GitHubModelsProvider(model="test-model", token="")
-        assert provider.is_available() is False
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.get")
-    def test_list_models_from_endpoint(self, mock_get) -> None:
-        """Test listing models parsed from the OpenAI-compatible endpoint."""
-        mock_get.return_value = _mock_http_response(200, {"data": [{"id": "m1"}, {"id": "m2"}]})
-        provider = GitHubModelsProvider(model="test-model", token="test-token")
-        assert provider.list_models() == ["m1", "m2"]
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.get")
-    def test_list_models_fallback(self, mock_get) -> None:
-        """Test fallback to the curated list when the API is unreachable."""
-        mock_get.side_effect = Exception("network down")
-        provider = GitHubModelsProvider(model="test-model", token="test-token")
-        models = provider.list_models()
-        assert models == KNOWN_GITHUB_MODELS
-        assert "gpt-4o-mini" in models
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_generate(self, mock_post) -> None:
-        """Test generating a response via GitHub Models API."""
-        mock_post.return_value = _mock_http_response(
-            200,
-            {
-                "choices": [{"message": {"content": "Test response"}}],
-                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-            },
-        )
-
-        provider = GitHubModelsProvider(model="test-model", token="test-token")
-        response = provider.generate("Test prompt")
-
-        assert isinstance(response, LLMResponse)
-        assert response.text == "Test response"
-        assert response.model == "test-model"
-        assert response.provider == "github_models"
-        assert response.usage["total_tokens"] == 15
-
-
-class TestGroqProvider:
-    """Test GroqProvider class."""
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_is_available_success(self, mock_post) -> None:
-        """Test availability check when API is reachable."""
-        mock_post.return_value = _mock_http_response(200, {"choices": [{"x": 1}]})
-
-        provider = GroqProvider(model="llama-3.1-8b-instant", token="test-key")
-        assert provider.is_available() is True
-
-    def test_is_available_without_token(self) -> None:
-        """No token means the provider is not available."""
-        provider = GroqProvider(model="llama-3.1-8b-instant", token="")
-        assert provider.is_available() is False
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.get")
-    def test_list_models_fallback(self, mock_get) -> None:
-        """Test fallback to the curated list when the API is unreachable."""
-        mock_get.side_effect = Exception("network down")
-        provider = GroqProvider(model="llama-3.1-8b-instant", token="test-key")
-        models = provider.list_models()
-        assert models == KNOWN_GROQ_MODELS
-        assert "llama-3.3-70b-versatile" in models
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_generate(self, mock_post) -> None:
-        """Test generating a response via Groq."""
-        mock_post.return_value = _mock_http_response(
-            200,
-            {
-                "choices": [{"message": {"content": "Groq response"}}],
-                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
-            },
-        )
-
-        provider = GroqProvider(model="llama-3.1-8b-instant", token="test-key")
-        response = provider.generate("hi")
-
-        assert response.text == "Groq response"
-        assert response.provider == "groq"
-        assert response.usage["total_tokens"] == 5
+        provider = OllamaProvider(model="m", max_retries=2, backoff_factor=1.0)
+        with patch("time.sleep"):
+            assert provider.generate("hi").text == "ok"
+        assert client_cls.return_value.chat.call_count == 2
 
 
 class TestMistralProvider:
-    """Test MistralProvider class."""
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_is_available_success(self, post: MagicMock) -> None:
+        post.return_value = _response(200, {"choices": [{"x": 1}]})
+        assert MistralProvider(model="m", token="t").is_available() is True
 
     @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_is_available_success(self, mock_post) -> None:
-        """Test availability check when API is reachable."""
-        mock_post.return_value = _mock_http_response(200, {"choices": [{"x": 1}]})
+    def test_is_available_rate_limited(self, post: MagicMock) -> None:
+        post.return_value = _http_error(429)
+        assert MistralProvider(model="m", token="t").is_available() is True
 
-        provider = MistralProvider(model="mistral-small-latest", token="test-key")
-        assert provider.is_available() is True
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_is_available_error(self, post: MagicMock) -> None:
+        post.return_value = _http_error(401)
+        assert MistralProvider(model="m", token="t").is_available() is False
 
     def test_is_available_without_token(self) -> None:
-        """No token means the provider is not available."""
-        provider = MistralProvider(model="mistral-small-latest", token="")
-        assert provider.is_available() is False
-
-    @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_is_available_rate_limited(self, mock_post) -> None:
-        """429 means provider is reachable but busy — still available."""
-        mock_post.return_value = _mock_http_error(429)
-        provider = MistralProvider(model="mistral-small-latest", token="test-key")
-        assert provider.is_available() is True
+        assert MistralProvider(model="m", token="").is_available() is False
 
     @patch("scan_git_push.llm.openai_compatible.httpx.get")
-    def test_list_models_fallback(self, mock_get) -> None:
-        """Test fallback to the curated list when the API is unreachable."""
-        mock_get.side_effect = Exception("network down")
-        provider = MistralProvider(model="mistral-small-latest", token="test-key")
-        models = provider.list_models()
+    def test_list_models_from_endpoint(self, get: MagicMock) -> None:
+        get.return_value = _response(200, {"data": [{"id": "m1"}, {"id": "m2"}]})
+        assert MistralProvider(model="m", token="t").list_models() == ["m1", "m2"]
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.get")
+    def test_list_models_fallback(self, get: MagicMock) -> None:
+        get.side_effect = RuntimeError("down")
+        models = MistralProvider(model="m", token="t").list_models()
         assert models == KNOWN_MISTRAL_MODELS
         assert "mistral-small-latest" in models
 
     @patch("scan_git_push.llm.openai_compatible.httpx.post")
-    def test_generate(self, mock_post) -> None:
-        """Test generating a response via Mistral."""
-        mock_post.return_value = _mock_http_response(
+    def test_generate(self, post: MagicMock) -> None:
+        post.return_value = _response(
             200,
             {
-                "choices": [{"message": {"content": "Mistral response"}}],
-                "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6},
+                "choices": [{"message": {"content": "answer"}}],
+                "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
             },
         )
+        result = MistralProvider(model="mistral-small-latest", token="t").generate("hi")
 
-        provider = MistralProvider(model="mistral-small-latest", token="test-key")
-        response = provider.generate("hi")
+        assert result.text == "answer"
+        assert result.provider == "mistral"
+        assert result.usage["total_tokens"] == 5
 
-        assert response.text == "Mistral response"
-        assert response.provider == "mistral"
-        assert response.usage["total_tokens"] == 6
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_generate_retries_then_succeeds(self, post: MagicMock) -> None:
+        post.side_effect = [
+            RuntimeError("boom"),
+            _response(200, {"choices": [{"message": {"content": "ok"}}]}),
+        ]
+        provider = MistralProvider(model="m", token="t", max_retries=2, backoff_factor=1.0)
+        with patch("time.sleep"):
+            assert provider.generate("hi").text == "ok"
+        assert post.call_count == 2
+
+    @patch("scan_git_push.llm.openai_compatible.httpx.post")
+    def test_generate_raises_after_retries(self, post: MagicMock) -> None:
+        post.side_effect = RuntimeError("boom")
+        provider = MistralProvider(model="m", token="t", max_retries=2, backoff_factor=1.0)
+        with patch("time.sleep"), pytest.raises(RuntimeError):
+            provider.generate("hi")
+
+
+class TestNoLegacyProviders:
+    def test_github_models_module_is_gone(self) -> None:
+        with pytest.raises(ModuleNotFoundError):
+            __import__("scan_git_push.llm.github_models")
+
+    def test_groq_module_is_gone(self) -> None:
+        with pytest.raises(ModuleNotFoundError):
+            __import__("scan_git_push.llm.groq")
+
+
+class TestModelRegistry:
+    def test_parse_spec_with_provider(self, settings) -> None:
+        registry = ModelRegistry(settings)
+        assert registry.parse_spec("ollama/llama3.1:8b") == ModelOption(
+            "ollama", "llama3.1:8b"
+        )
+
+    def test_parse_spec_defaults_to_configured_provider(self, settings) -> None:
+        registry = ModelRegistry(settings)
+        assert registry.parse_spec("mistral-large-latest") == ModelOption(
+            "mistral", "mistral-large-latest"
+        )
+
+    def test_parse_spec_rejects_unknown_provider(self, settings) -> None:
+        registry = ModelRegistry(settings)
+        with pytest.raises(ValueError):
+            registry.parse_spec("groq/llama")
+
+    def test_parse_spec_rejects_empty_model(self, settings) -> None:
+        registry = ModelRegistry(settings)
+        with pytest.raises(ValueError):
+            registry.parse_spec("ollama/")
+
+    def test_default_option(self, settings) -> None:
+        assert ModelRegistry(settings).default_option() == ModelOption(
+            "mistral", "mistral-small-latest"
+        )
+
+    def test_resolve_returns_none_when_interactive(self, settings) -> None:
+        settings.llm.model = None
+        settings.llm.non_interactive = False
+        assert ModelRegistry(settings).resolve() is None
+
+    def test_resolve_uses_non_interactive_default(self, settings) -> None:
+        settings.llm.model = None
+        settings.llm.non_interactive = True
+        assert ModelRegistry(settings).resolve() == ModelOption(
+            "mistral", "mistral-small-latest"
+        )
+
+    def test_build_mistral_uses_secret(self, settings) -> None:
+        provider = ModelRegistry(settings).build(ModelOption("mistral", "m"))
+        assert provider.token == "test_key"
+        assert provider.provider_name == "mistral"
+
+    def test_build_ollama(self, settings) -> None:
+        provider = ModelRegistry(settings).build(ModelOption("ollama", "llama3"))
+        assert provider.provider_name == "ollama"
+        assert provider.model == "llama3"
+
+    @patch("scan_git_push.llm.registry.OllamaProvider")
+    def test_discover_merges_providers(self, ollama_cls: MagicMock, settings) -> None:
+        instance = MagicMock()
+        instance.is_available.return_value = True
+        instance.list_models.return_value = ["local-model"]
+        ollama_cls.return_value = instance
+
+        registry = ModelRegistry(settings)
+        with patch.object(registry, "_read_cache", return_value=["mistral-small-latest"]):
+            options = registry.discover()
+
+        assert ModelOption("ollama", "local-model") in options
+        assert ModelOption("mistral", "mistral-small-latest") in options
+
+    def test_discover_without_ollama_or_key(self, settings, tmp_path) -> None:
+        settings.llm.probe_ollama = False
+        secrets = tmp_path / "empty.secrets"
+        secrets.write_text("OTHER=1\n", encoding="utf-8")
+        settings.secrets_path = str(secrets)
+
+        with patch.object(ModelRegistry, "_read_cache", return_value=None):
+            assert ModelRegistry(settings).discover() == []

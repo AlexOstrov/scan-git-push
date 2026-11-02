@@ -7,6 +7,7 @@
   "llm_providers": ["ollama", "github_models"],
   "secrets_path": "d:\\projects\\fullstack-demo\\.secrets",
   "output_formats": ["console", "markdown", "html"],
+  "compaction": { "buffer": "15%" },
   "retry_policy": {
     "max_retries": 3,
     "backoff_factor": 2,

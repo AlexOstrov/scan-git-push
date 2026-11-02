@@ -1,1 +1,21 @@
 # FEATURES
+
+- Анализ коммитов за N дней с LLM (Ollama, Mistral AI).
+- Локальные git-зеркала вместо GitHub API; partial clone для больших репозиториев.
+- Несколько проектов в одном запуске; отчёт на проект и сводный.
+- Все ветки с дедупликацией SHA.
+- Chunking diff по файлам и хункам с лимитом на файл.
+- Исключение lock-файлов, минифицированных бандлов, `dist/`, `vendor/`, `*.map`.
+- `analysis.db` v1 с миграцией старой БД и бэкапом.
+- Дедупликация коммитов по `(проект, SHA)`; `--reanalyze`.
+- `report-from-db` без вызова LLM.
+- Связь коммитов с требованиями `scan.db` (`LINK_REQUIREMENTS`).
+- Режим `scan`: маркеры `<!-- REQ-META ... -->` в `*.txt`/`*.md` → `db/scan.db` без LLM.
+- `scan.db` v1: проекты, прогоны, хэши/снимки файлов, требования, пункты, вхождения; содержимое файлов не хранится.
+- `scan`: ветки `all`/`default`/список, `BRANCH_INCLUDE`/`BRANCH_EXCLUDE`, include/exclude/secrets, размер и кодировки.
+- `scan`: идемпотентность, reconciliation, GC хэшей, `--dry-run`, `--force`, `--strict`, `--json`, алиас `--scan`, Rich progress bar в интерактивном режиме.
+- Консоль, Markdown, автономный интерактивный HTML, сводный отчёт.
+- Выбор модели: интерактивно, `--model`, `--non-interactive`, кэш моделей.
+- `--json` для автоматизации.
+- Retry с exponential backoff; коды выхода `0/1/2/3/4/5/8/9/11/12`.
+- Артефактная память `docs/memory/`.

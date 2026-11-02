@@ -12,14 +12,22 @@ from scan_git_push.llm.base import LLMProvider, LLMResponse
 class OllamaProvider(LLMProvider):
     """LLM provider that connects to a local Ollama instance."""
 
+    provider_name = "ollama"
+
     def __init__(
         self,
         model: str,
         base_url: str = "http://localhost:11434",
+        http_timeout: float = 30.0,
+        max_retries: int = 3,
+        backoff_factor: float = 2.0,
         **kwargs: Any,
     ) -> None:
         super().__init__(model, **kwargs)
         self.base_url = base_url
+        self.timeout = http_timeout
+        self.max_retries = max_retries
+        self.backoff_factor = backoff_factor
         self._client: Any = None
 
     @property
@@ -28,11 +36,14 @@ class OllamaProvider(LLMProvider):
         if self._client is None:
             import ollama
 
-            self._client = ollama.Client(host=self.base_url)
+            try:
+                self._client = ollama.Client(host=self.base_url, timeout=self.timeout)
+            except TypeError:  # older SDK without a timeout argument
+                self._client = ollama.Client(host=self.base_url)
         return self._client
 
     def is_available(self) -> bool:
-        """Check if Ollama server is reachable."""
+        """Check if the Ollama server is reachable."""
         try:
             self.client.list()
             return True
@@ -44,7 +55,7 @@ class OllamaProvider(LLMProvider):
         """List models available in Ollama."""
         try:
             response = self.client.list()
-            return [m.model for m in response.models if m.model]
+            return [model.model for model in response.models if model.model]
         except Exception as exc:
             logger.warning(f"Failed to list Ollama models: {exc}")
             return []
@@ -61,16 +72,16 @@ class OllamaProvider(LLMProvider):
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
+            return self.client.chat(model=self.model, messages=messages)
 
-            response = self.client.chat(model=self.model, messages=messages)
-            return response
-
-        response = self._retry_with_backoff(_call)
+        response = self._retry_with_backoff(
+            _call, max_retries=self.max_retries, backoff_factor=self.backoff_factor
+        )
 
         return LLMResponse(
             text=response.message.content,
             model=self.model,
-            provider="ollama",
+            provider=self.provider_name,
             usage={
                 "prompt_eval_count": response.get("prompt_eval_count", 0),
                 "eval_count": response.get("eval_count", 0),

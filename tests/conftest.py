@@ -3,54 +3,103 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from scan_git_push.config import Settings
+from scan_git_push.git.models import CommitData, FileChange
 
 
-@pytest.fixture
-def temp_config(tmp_path: Path) -> Path:
-    """Create a temporary config.json file."""
-    config_data = {
-        "GIT_PROJECT": "https://github.com/test/repo",
-        "GIT_DAY": 7,
-        "SECRETS_PATH": str(tmp_path / ".secrets"),
-        "LLM_PROVIDER": "ollama",
-        "OLLAMA_BASE_URL": "http://localhost:11434",
-        "OLLAMA_MODEL": "test-model",
-        "GH_MODELS_MODEL": "test-model",
-        "GH_MODELS_ENDPOINT": "https://models.github.ai/inference",
-        "MAX_DIFF_CHARS_PER_CHUNK": 12000,
-        "MAX_CHUNK_RETRIES": 3,
-        "BACKOFF_FACTOR": 2.0,
-        "OUTPUT_DIR": str(tmp_path / "reports"),
-        "MEMORY_DIR": str(tmp_path / "docs/memory"),
-    }
-    config_file = tmp_path / "config.json"
-    config_file.write_text(json.dumps(config_data), encoding="utf-8")
-    return config_file
-
-
-@pytest.fixture
-def temp_secrets(tmp_path: Path) -> Path:
-    """Create a temporary secrets file."""
-    secrets_file = tmp_path / ".secrets"
-    secrets_file.write_text(
-        "GITHUB_TOKEN=test_github_token\n"
-        "GITHUB_MODELS_TOKEN=test_models_token\n",
+def git(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> str:
+    """Run git and return stdout."""
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
         encoding="utf-8",
+        env=env,
+        check=True,
     )
-    return secrets_file
+    return completed.stdout
 
 
 @pytest.fixture
-def sample_commit_data():
-    """Create sample CommitData for testing."""
-    from scan_git_push.github_client import CommitData, FileChange
+def git_repo(tmp_path: Path) -> Path:
+    """Create a repository with three commits, two branches and a binary file."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git(["init", "-b", "main"], repo)
+    git(["config", "user.email", "test@example.com"], repo)
+    git(["config", "user.name", "Tester"], repo)
 
+    (repo / "docs").mkdir()
+    (repo / "docs" / "req.md").write_text(
+        '<!-- REQ-META id="REQ_1" point="1.1" name="First" -->\n', encoding="utf-8"
+    )
+    (repo / "src.py").write_text("print(1)\n", encoding="utf-8")
+    git(["add", "."], repo)
+    git(["commit", "-m", "initial"], repo)
+
+    (repo / "src.py").write_text("print(2)\n", encoding="utf-8")
+    (repo / "bin.dat").write_bytes(b"\x00\x01\x02")
+    git(["add", "."], repo)
+    git(["commit", "-m", "second commit\n\nBody line"], repo)
+
+    git(["checkout", "-b", "feature"], repo)
+    (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+    git(["add", "."], repo)
+    git(["commit", "-m", "feature commit"], repo)
+    git(["checkout", "main"], repo)
+    return repo
+
+
+@pytest.fixture
+def config_file(tmp_path: Path, git_repo: Path) -> Path:
+    """Create a nested config.json and a secrets file."""
+    secrets = tmp_path / ".secrets"
+    secrets.write_text("MISTRAL_API_KEY=test_key\nGITHUB_TOKEN=test_token\n", encoding="utf-8")
+
+    data = {
+        "SECRETS_PATH": str(secrets),
+        "SCAN": {
+            "GIT_PROJECTS": [str(git_repo)],
+            "DB_PATH": "db/scan.db",
+            "MIRROR_DIR": "db/repos/",
+            "MIRROR_FILTER": "none",
+        },
+        "ANALYSIS": {
+            "GIT_DAY": 30,
+            "DB_PATH": "db/analysis.db",
+            "OUTPUT_DIR": "reports/",
+            "MEMORY_DIR": "docs/memory/",
+            "MAX_DIFF_CHARS_PER_CHUNK": 12_000,
+            "MAX_PATCH_CHARS_PER_FILE": 2_000,
+            "MAX_CHUNK_RETRIES": 1,
+            "BACKOFF_FACTOR": 1.0,
+            "LINK_REQUIREMENTS": False,
+        },
+        "LLM": {
+            "PROVIDER": "mistral",
+            "MODEL": "mistral/mistral-small-latest",
+            "NON_INTERACTIVE": True,
+        },
+    }
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+@pytest.fixture
+def settings(config_file: Path) -> Settings:
+    return Settings.from_file(config_file)
+
+
+@pytest.fixture
+def sample_commit_data() -> CommitData:
     return CommitData(
         sha="abc123def456",
         author="testuser",
@@ -58,20 +107,18 @@ def sample_commit_data():
         message="Test commit message",
         files=[
             FileChange(
-                filename="test_file.py",
+                path="test_file.py",
                 status="modified",
                 additions=10,
                 deletions=5,
-                patch="@@ -1,3 +1,5 @@\n+new line\n-old line",
+                patch="diff --git a/test_file.py b/test_file.py\n@@ -1,3 +1,5 @@\n+new line\n-old line",
             ),
         ],
-        is_merge=False,
     )
 
 
 @pytest.fixture
 def sample_analysis_result():
-    """Create sample AnalysisResult for testing."""
     from scan_git_push.analyzer import AnalysisResult
 
     return AnalysisResult(
@@ -82,17 +129,39 @@ def sample_analysis_result():
         files=["test_file.py"],
         summary="Test summary",
         chunks_analyzed=1,
+        file_changes=[
+            FileChange(
+                path="test_file.py",
+                status="modified",
+                additions=10,
+                deletions=5,
+            )
+        ],
+        additions=10,
+        deletions=5,
     )
 
 
 @pytest.fixture
-def mock_llm_response():
-    """Create a mock LLM response for testing."""
-    from scan_git_push.llm.base import LLMResponse
+def fake_llm():
+    """A provider that never touches the network."""
+    from scan_git_push.llm.base import LLMProvider, LLMResponse
 
-    return LLMResponse(
-        text="Test LLM response",
-        model="test-model",
-        provider="ollama",
-        usage={"prompt_eval_count": 100, "eval_count": 50},
-    )
+    class FakeLLM(LLMProvider):
+        provider_name = "fake"
+
+        def __init__(self, model: str = "fake-model") -> None:
+            super().__init__(model)
+            self.prompts: list[str] = []
+
+        def generate(self, prompt: str, system_prompt: str | None = None) -> LLMResponse:
+            self.prompts.append(prompt)
+            return LLMResponse(text="Fake summary", model=self.model, provider="fake")
+
+        def is_available(self) -> bool:
+            return True
+
+        def list_models(self) -> list[str]:
+            return [self.model]
+
+    return FakeLLM()

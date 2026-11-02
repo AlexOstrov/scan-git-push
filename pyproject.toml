@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scan-git-push"
-version = "0.1.0"
+version = "0.2.0"
 description = "Analyze git push changes with LLM-powered commit summaries"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -14,7 +14,6 @@ dependencies = [
     "rich>=13.0.0",
     "pydantic-settings>=2.0.0",
     "loguru>=0.7.0",
-    "PyGithub>=2.1.0",
     "ollama>=0.1.0",
     "jinja2>=3.1.0",
     "httpx>=0.25.0",
@@ -28,7 +27,7 @@ dev = [
 ]
 
 [project.scripts]
-scan-git-push = "scan_git_push.cli:app"
+scan-git-push = "scan_git_push.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["scan_git_push"]

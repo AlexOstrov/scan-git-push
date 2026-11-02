@@ -33,7 +33,7 @@ class MemoryManager:
     def __init__(self, memory_dir: Path) -> None:
         self.memory_dir = memory_dir
         self.state_file = memory_dir / "STATE.md"
-        self.features_file = memory_file = memory_dir / "FEATURES.md"
+        self.features_file = memory_dir / "FEATURES.md"
         self.decisions_file = memory_dir / "DECISIONS.md"
         self.changelog_file = memory_dir / "CHANGELOG.md"
 

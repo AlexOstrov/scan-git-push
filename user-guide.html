@@ -171,29 +171,30 @@ tr:hover { background: var(--bg-secondary); }
 </div>
 
 <h2 id="overview">1. Обзор</h2>
-<p><code>scan-git-push</code> — утилита для анализа коммитов GitHub-репозитория за указанный период. Использует LLM (Ollama, Mistral AI или GitHub Models) для генерации саммари каждого коммита.</p>
+<p><code>scan-git-push</code> — утилита для анализа коммитов одного или нескольких git-репозиториев за указанный период. Коммиты и патчи читаются из локальных bare-зеркал (без GitHub API), саммари генерирует LLM (Ollama или Mistral AI). Отдельный режим <code>scan</code> ищет маркеры требований <code>REQ-META</code> в файлах и ведёт базу <code>db/scan.db</code> без вызова LLM.</p>
 
 <table>
   <tr><th>Характеристика</th><th>Описание</th></tr>
-  <tr><td>Язык</td><td>Python 3.11+</td></tr>
-  <tr><td>LLM провайдеры</td><td><span class="badge badge-green">Ollama</span><span class="badge badge-blue">Mistral AI</span><span class="badge badge-yellow">Groq / GitHub Models (недоступны в РФ)</span></td></tr>
+  <tr><td>Язык</td><td>Python 3.11+, git 2.30+</td></tr>
+  <tr><td>LLM провайдеры</td><td><span class="badge badge-green">Ollama</span><span class="badge badge-blue">Mistral AI</span></td></tr>
+  <tr><td>Источник данных</td><td>Локальные git-зеркала в <code>SCAN.MIRROR_DIR</code>; partial clone для удалённых репозиториев</td></tr>
   <tr><td>Форматы вывода</td><td><span class="badge badge-green">Консоль</span><span class="badge badge-blue">Markdown</span><span class="badge badge-yellow">HTML</span></td></tr>
-  <tr><td>Анализируемый период</td><td>1–365 дней (настраивается)</td></tr>
+  <tr><td>Анализируемый период</td><td>1–365 дней (<code>ANALYSIS.GIT_DAY</code>)</td></tr>
 </table>
 
 <h2 id="prerequisites">2. Предусловия</h2>
 
 <div class="prereq-box ok">
-  <span class="badge badge-green">Обязательно</span> <strong>Python 3.11+</strong>
-  <p style="margin-top:8px; margin-bottom:0;">Скачать: <a href="https://www.python.org/downloads/" style="color:var(--accent);">python.org/downloads</a></p>
+  <span class="badge badge-green">Обязательно</span> <strong>Python 3.11+ и git 2.30+</strong>
+  <p style="margin-top:8px; margin-bottom:0;">Python: <a href="https://www.python.org/downloads/" style="color:var(--accent);">python.org/downloads</a> · git: <a href="https://git-scm.com/downloads" style="color:var(--accent);">git-scm.com</a>. <code>git</code> должен быть доступен в <code>PATH</code>.</p>
 </div>
 
-<div class="prereq-box ok">
-  <span class="badge badge-green">Обязательно</span> <strong>Файл секретов</strong> <code>d:\projects\fullstack-demo\.secrets</code>
+<div class="prereq-box optional">
+  <span class="badge badge-yellow">Опционально</span> <strong>Файл секретов</strong> <code>d:\projects\fullstack-demo\.secrets</code>
   <p style="margin-top:8px; margin-bottom:0;">Формат файла:</p>
-  <pre><code>GITHUB_TOKEN=ghp_ваш_токен_github
-MISTRAL_API_KEY=ключ_из_console.mistral.ai</code></pre>
-  <p style="margin-top:8px; margin-bottom:0;"><em><code>GITHUB_TOKEN</code> нужен для чтения репозитория. <code>MISTRAL_API_KEY</code> — для Mistral AI (получите на <code>console.mistral.ai</code>).</em></p>
+  <pre><code>MISTRAL_API_KEY=ключ_из_console.mistral.ai
+GITHUB_TOKEN=ghp_ваш_токен_github</code></pre>
+  <p style="margin-top:8px; margin-bottom:0;"><em><code>MISTRAL_API_KEY</code> нужен только при выборе Mistral AI (обязателен, если <code>LLM.PROVIDER=mistral</code>). <code>GITHUB_TOKEN</code> опционален и нужен для доступа к приватным репозиториям по HTTPS. Ollama работает без файла секретов.</em></p>
 </div>
 
 <div class="prereq-box ok">
@@ -201,12 +202,12 @@ MISTRAL_API_KEY=ключ_из_console.mistral.ai</code></pre>
   <ul style="margin-top:8px; padding-left:20px;">
     <li><strong>Mistral AI</strong> — онлайн, OpenAI-совместимый API, есть бесплатный тариф (требуется <code>MISTRAL_API_KEY</code>)</li>
     <li><strong>Ollama</strong> — запущена локально на <code>http://localhost:11434</code> с установленной моделью</li>
-    <li><strong>Groq / GitHub Models</strong> — заблокированы в РФ (Groq: 403 Forbidden, GitHub Models: закрыт 30.07.2026)</li>
   </ul>
 </div>
 
-<div class="prereq-box optional">
-  <span class="badge badge-yellow">Опционально</span> <strong>Git</strong> — не обязателен, утилита работает через GitHub API
+<div class="prereq-box ok">
+  <span class="badge badge-green">Обязательно</span> <strong>Git-репозитории</strong>
+  <p style="margin-top:8px; margin-bottom:0;">Поддерживаются удалённые URL (HTTPS/SSH) и локальные пути. Для каждого проекта создаётся отдельное bare-зеркало; при <code>MIRROR_FILTER=auto</code> удалённые репозитории клонируются частично (<code>--filter=blob:none</code>).</p>
 </div>
 
 <h2 id="installation">3. Установка</h2>
@@ -232,46 +233,86 @@ source .venv/bin/activate</code></pre>
 <p>Отредактируйте файл <span class="file-path">config.json</span>:</p>
 
 <pre><code>{
-  "GIT_PROJECT": "https://github.com/AlexOstrov/fullstack-demo.git",
-  "GIT_DAY": 7,
   "SECRETS_PATH": "d:\\projects\\fullstack-demo\\.secrets",
-  "LLM_PROVIDER": "mistral",
-  "OLLAMA_BASE_URL": "http://localhost:11434",
-  "OLLAMA_MODEL": "llama3.1:8b",
-  "GH_MODELS_MODEL": "gpt-4o-mini",
-  "GH_MODELS_ENDPOINT": "https://models.github.ai/inference",
-  "GROQ_MODEL": "llama-3.3-70b-versatile",
-  "GROQ_ENDPOINT": "https://api.groq.com/openai/v1",
-  "MISTRAL_MODEL": "mistral-small-latest",
-  "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1",
-  "DB_PATH": "db/",
-  "DB_RETENTION_DAYS": 60
-}</code></pre></code></pre>
+  "SCAN": {
+    "GIT_PROJECTS": [
+      "https://github.com/AlexOstrov/example.git",
+      "https://github.com/AlexOstrov/KK.git"
+    ],
+    "DB_PATH": "db/scan.db",
+    "MIRROR_DIR": "db/repos/",
+    "MIRROR_FILTER": "auto",
+    "BRANCHES": "all",
+    "BRANCH_INCLUDE": [],
+    "BRANCH_EXCLUDE": [],
+    "INCLUDE": ["**/*.txt", "**/*.md", "**/*.html"],
+    "EXCLUDE": [],
+    "EXCLUDE_SECRETS": [],
+    "MAX_FILE_SIZE": 1048576,
+    "ENCODING": "utf-8",
+    "FALLBACK_ENCODING": "cp1251",
+    "STRICT": false,
+    "GC_HASHES": true,
+    "LOG_PATH": "logs/scan.log"
+  },
+  "ANALYSIS": {
+    "GIT_DAY": 7,
+    "BRANCHES": "all",
+    "FIRST_PARENT": false,
+    "MAX_DIFF_CHARS_PER_CHUNK": 12000,
+    "MAX_PATCH_CHARS_PER_FILE": 4000,
+    "MAX_CHUNK_RETRIES": 3,
+    "BACKOFF_FACTOR": 2,
+    "CONCURRENCY": 1,
+    "EXCLUDE": ["*.lock", "*.min.js", "dist/**", "vendor/**", "node_modules/**"],
+    "PROMPT_VERSION": 1,
+    "LINK_REQUIREMENTS": true,
+    "OUTPUT_DIR": "reports/",
+    "MEMORY_DIR": "docs/memory/",
+    "LOG_PATH": "logs/analysis.log",
+    "DB_PATH": "db/analysis.db",
+    "DB_RETENTION_DAYS": 60
+  },
+  "LLM": {
+    "PROVIDER": "mistral",
+    "MODEL": null,
+    "NON_INTERACTIVE": false,
+    "PROBE_OLLAMA": true,
+    "MODEL_CACHE_TTL": 3600,
+    "HTTP_TIMEOUT": 30,
+    "MISTRAL_MODEL": "mistral-small-latest",
+    "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1",
+    "OLLAMA_BASE_URL": "http://localhost:11434",
+    "OLLAMA_MODEL": "llama3.1:8b"
+  }
+}</code></pre>
 
 <div class="note">
   <div class="note-title">Переключение провайдера на лету</div>
-  <p style="margin-bottom:0;">Значение <code>LLM_PROVIDER</code> задаёт требования к токену и модель по умолчанию, но при запуске утилита опрашивает <strong>оба</strong> провайдера и показывает модели из всех доступных. Вы можете выбрать любую модель из списка, независимо от <code>LLM_PROVIDER</code>.</p>
+  <p style="margin-bottom:0;"><code>LLM.PROVIDER</code> задаёт провайдера и требования к токену по умолчанию, но утилита опрашивает доступных провайдеров и показывает их модели. Вы можете выбрать любую модель из списка, независимо от <code>LLM.PROVIDER</code>. Для неинтерактивного запуска используйте <code>--non-interactive</code> и <code>--model provider/model</code>.</p>
 </div>
 
 <table>
-  <tr><th>Параметр</th><th>Описание</th><th>Значение по умолчанию</th></tr>
-  <tr><td><code>GIT_PROJECT</code></td><td>URL GitHub-репозитория</td><td>—</td></tr>
-  <tr><td><code>GIT_DAY</code></td><td>Количество дней для анализа (1–365)</td><td>7</td></tr>
-  <tr><td><code>SECRETS_PATH</code></td><td>Путь к файлу с токенами</td><td><code>d:\projects\fullstack-demo\.secrets</code></td></tr>
-  <tr><td><code>LLM_PROVIDER</code></td><td>Провайдер по умолчанию: <code>ollama</code>, <code>groq</code>, <code>mistral</code> или <code>github_models</code></td><td><code>ollama</code></td></tr>
-  <tr><td><code>OLLAMA_MODEL</code></td><td>Модель Ollama для анализа</td><td><code>llama3.1:8b</code></td></tr>
-  <tr><td><code>GH_MODELS_MODEL</code></td><td>Модель GitHub Models API (сервис закрыт)</td><td><code>gpt-4o-mini</code></td></tr>
-  <tr><td><code>GROQ_MODEL</code></td><td>Модель Groq</td><td><code>llama-3.3-70b-versatile</code></td></tr>
-  <tr><td><code>GROQ_ENDPOINT</code></td><td>Endpoint Groq API</td><td><code>https://api.groq.com/openai/v1</code></td></tr>
-  <tr><td><code>MISTRAL_MODEL</code></td><td>Модель Mistral AI</td><td><code>mistral-small-latest</code></td></tr>
-  <tr><td><code>MISTRAL_ENDPOINT</code></td><td>Endpoint Mistral AI</td><td><code>https://api.mistral.ai/v1</code></td></tr>
-  <tr><td><code>DB_PATH</code></td><td>Каталог для базы данных анализа коммитов</td><td><code>db/</code></td></tr>
-  <tr><td><code>DB_RETENTION_DAYS</code></td><td>Срок хранения записей в БД (дней)</td><td>60</td></tr>
+  <tr><th>Параметр</th><th>Описание</th><th>По умолчанию</th></tr>
+  <tr><td><code>SCAN.GIT_PROJECTS</code></td><td>URL или локальные пути анализируемых проектов</td><td>—</td></tr>
+  <tr><td><code>SCAN.INCLUDE</code></td><td>Include-шаблоны файлов для режима <code>scan</code></td><td><code>**/*.txt</code>, <code>**/*.md</code></td></tr>
+  <tr><td><code>SCAN.EXCLUDE</code> / <code>EXCLUDE_SECRETS</code></td><td>Исключаемые файлы; секретные не читаются</td><td>пусто</td></tr>
+  <tr><td><code>SCAN.BRANCHES</code></td><td><code>all</code>, <code>default</code> или список веток</td><td><code>all</code></td></tr>
+  <tr><td><code>SCAN.MAX_FILE_SIZE</code></td><td>Лимит размера файла в байтах</td><td>1048576</td></tr>
+  <tr><td><code>ANALYSIS.GIT_DAY</code></td><td>Количество дней для анализа (1–365)</td><td>7</td></tr>
+  <tr><td><code>ANALYSIS.BRANCHES</code></td><td>Ветки для анализа коммитов</td><td><code>all</code></td></tr>
+  <tr><td><code>ANALYSIS.LINK_REQUIREMENTS</code></td><td>Связывать коммиты с требованиями из <code>scan.db</code></td><td><code>true</code></td></tr>
+  <tr><td><code>ANALYSIS.DB_PATH</code></td><td>База проанализированных коммитов</td><td><code>db/analysis.db</code></td></tr>
+  <tr><td><code>LLM.PROVIDER</code></td><td>Провайдер по умолчанию: <code>ollama</code> или <code>mistral</code></td><td><code>mistral</code></td></tr>
+  <tr><td><code>LLM.MODEL</code></td><td>Модель по умолчанию (<code>provider/model</code>)</td><td><code>null</code> — выбор в меню</td></tr>
+  <tr><td><code>LLM.MISTRAL_MODEL</code></td><td>Модель Mistral AI</td><td><code>mistral-small-latest</code></td></tr>
+  <tr><td><code>LLM.OLLAMA_MODEL</code></td><td>Модель Ollama</td><td><code>llama3.1:8b</code></td></tr>
+  <tr><td><code>LLM.HTTP_TIMEOUT</code></td><td>Таймаут HTTP-запроса к LLM, секунды (5–120)</td><td>30</td></tr>
 </table>
 <ol style="padding-left:20px;">
   <li>Зарегистрируйтесь на <code>console.mistral.ai</code> и создайте API-ключ в разделе <em>API Keys</em></li>
   <li>Добавьте ключ в <code>.secrets</code>: <code>MISTRAL_API_KEY=...</code></li>
-  <li>Установите <code>LLM_PROVIDER</code> в <code>mistral</code> (или оставьте <code>ollama</code> и выберите модель Mistral в меню)</li>
+  <li>Установите <code>LLM.PROVIDER</code> в <code>mistral</code> (или оставьте Ollama и выберите модель Mistral в меню)</li>
   <li>Запустите утилиту и выберите модель из списка <em>[Mistral]</em></li>
 </ol>
 <div class="warning">
@@ -282,21 +323,21 @@ source .venv/bin/activate</code></pre>
 <h2 id="usage">5. Запуск</h2>
 
 <h3>Базовый запуск</h3>
-<pre><code>python -m scan_git_push</code></pre>
-<pre><code> или Запуск: .venv\Scripts\python.exe -m scan_git_push</code></pre>
+<pre><code>python -m scan_git_push
+python -m scan_git_push analyze --days 7</code></pre>
 
 <h3>С указанием пути к конфигу</h3>
 <pre><code>python -m scan_git_push --config C:\path\to\config.json</code></pre>
 
 <h3>Процесс работы</h3>
 <ol style="padding-left:20px; margin-top:8px;">
-  <li>Утилита загружает конфигурацию и проверяет секреты</li>
-  <li>Опрашивает Ollama и Mistral AI API (best-effort)</li>
-  <li>Собирает список моделей от всех доступных провайдеров</li>
+  <li>Утилита загружает конфигурацию и проверяет окружение</li>
+  <li>Для каждого проекта создаёт или обновляет локальное bare-зеркало (<code>git clone --mirror</code> / <code>git fetch --prune</code>)</li>
+  <li>Опрашивает Ollama и Mistral AI API и собирает доступные модели</li>
   <li><strong>Запрашивает у пользователя выбор модели</strong> (нумерованный список — можно переключиться между провайдерами на лету)</li>
-  <li>Получает коммиты из репозитория за указанный период</li>
-  <li>Анализирует каждый коммит через LLM с прогресс-баром</li>
-  <li>Генерирует отчёты в консоль, Markdown и HTML</li>
+  <li>Читает коммиты за указанный период из зеркала (committer date, все ветки с дедупликацией SHA)</li>
+  <li>Анализирует каждый коммит через LLM с прогресс-баром и повторными попытками</li>
+  <li>Сохраняет результаты в <code>db/analysis.db</code> и генерирует отчёты по каждому проекту и сводный</li>
 </ol>
 
 <div class="note">
@@ -306,32 +347,56 @@ source .venv/bin/activate</code></pre>
 
 <div class="note">
   <div class="note-title">Дедупликация коммитов (база данных)</div>
-  <p style="margin-bottom:0;">При каждом запуске утилита проверяет уже проанализированные коммиты в SQLite-базе (<code>db/</code>). Коммиты, которые были проанализированы ранее, не анализируются повторно — это предотвращает дублирование при ежедневных запусках. Записи старше <code>DB_RETENTION_DAYS</code> (по умолчанию 60 дней) автоматически удаляются из базы.</p>
+  <p style="margin-bottom:0;">При каждом запуске утилита проверяет уже проанализированные коммиты в SQLite-базе (<code>db/analysis.db</code>). Коммиты, которые были проанализированы ранее, не анализируются повторно — это предотвращает дублирование при ежедневных запусках. Записи старше <code>ANALYSIS.DB_RETENTION_DAYS</code> (по умолчанию 60 дней) автоматически удаляются из базы.</p>
 </div>
 
 <h3>Генерация отчёта из базы данных (без LLM)</h3>
 <p>Команда <code>report-from-db</code> позволяет сгенерировать отчёты (консоль, Markdown, HTML) из уже сохранённых в БД данных, без вызова LLM:</p>
-<pre><code>python -m scan_git_push report-from-db --days 7</code></pre>
+<pre><code>python -m scan_git_push report-from-db --days 30
+python -m scan_git_push report-from-db --project d:/projects/repo-b --json</code></pre>
 <ul style="padding-left:20px;">
   <li><code>--config</code> / <code>-c</code> — путь к config.json</li>
-  <li><code>--days</code> / <code>-d</code> — период в днях (переопределяет GIT_DAY)</li>
+  <li><code>--days</code> / <code>-d</code> — период в днях (переопределяет <code>ANALYSIS.GIT_DAY</code>)</li>
+  <li><code>--project</code> / <code>-p</code> — ограничить отчёты указанными проектами</li>
+  <li><code>--json</code> — машиночитаемый результат</li>
 </ul>
 <p>Это полезно, когда нужно повторно сформировать отчёт за предыдущие периоды, не тратя лимиты LLM.</p>
+
+<h3>Режим scan: маркеры требований без LLM</h3>
+<p>Команда <code>scan</code> читает tip выбранных веток и ищет канонические маркеры в файлах (<code>SCAN.INCLUDE</code>, по умолчанию <code>*.txt</code> и <code>*.md</code>). Результат сохраняется в <code>db/scan.db</code>: проекты, снимки файлов, требования, пункты и вхождения маркеров. Содержимое файлов не хранится — только SHA-256 и размер.</p>
+<pre><code>python -m scan_git_push scan
+python -m scan_git_push scan --project d:/projects/repo-b --branch main --include "docs/**/*.html"
+python -m scan_git_push scan --dry-run --strict
+python -m scan_git_push --scan --json   # устаревший алиас</code></pre>
+<pre><code>&lt;!-- REQ-META id="REQ_1" point="1.1" name="Название требования" --&gt;</code></pre>
+<ul style="padding-left:20px;">
+  <li>Старые форматы (<code>ID_REQ</code>, <code>ID_EXAMPLE</code>, маркер без <code>--&gt;</code>) не разбираются и дают предупреждение <code>[WARN] legacy marker format</code>.</li>
+  <li>По умолчанию сканируются только <code>*.txt</code> и <code>*.md</code>; <code>SCAN.EXCLUDE</code> имеет приоритет над include.</li>
+  <li>Symlink, submodule, LFS-указатели, бинарные и слишком большие файлы пропускаются с диагностикой.</li>
+  <li><code>--dry-run</code> не создаёт и не изменяет БД, <code>--force</code> снимает зависший <code>running</code>-запуск, <code>--strict</code> возвращает код <code>10</code> при неполных маркерах.</li>
+</ul>
 
 <h2 id="output">6. Результаты</h2>
 
 <h3>Консоль</h3>
-<p>Формированный вывод с прогресс-баром, списком файлов и саммари каждого коммита.</p>
+<p>Формированный вывод с прогресс-баром, списком файлов и саммари каждого коммита; в конце — сводка по каждому проекту и общий итог.</p>
 
 <h3>Markdown-отчёт</h3>
-<p>Сохраняется в <code>reports/{repo}_{date}.md</code> — структурированный отчёт со всеми коммитами.</p>
+<p>Сохраняется в <code>reports/{repo}_{date}.md</code> — структурированный отчёт со всеми коммитами. Дополнительно создаётся сводный <code>reports/_summary_{date}.md</code>.</p>
 
 <h3>Интерактивный HTML-отчёт</h3>
-<p>Сохраняется в <code>reports/{repo}_{date}.html</code> — автономный файл (не требует интернета) с:</p>
+<p>Сохраняется в <code>reports/{repo}_{date}.html</code> и <code>reports/_summary_{date}.html</code> — автономные файлы (не требуют интернета) с:</p>
 <ul style="padding-left:20px;">
   <li>Навигацией по коммитам (боковая панель)</li>
   <li>Статистикой (коммиты, файлы, LLM chunks)</li>
-  <li>Саммари каждого коммита</li>
+  <li>Саммари каждого коммита и связями с требованиями</li>
+</ul>
+
+<h3>Базы данных</h3>
+<ul style="padding-left:20px;">
+  <li><code>db/analysis.db</code> — проанализированные коммиты и файлы (схема v1).</li>
+  <li><code>db/scan.db</code> — проекты, ветки, снимки файлов, требования, пункты и вхождения маркеров (схема v1).</li>
+  <li><code>db/repos/</code> — bare-зеркала проектов; <code>logs/</code> — журналы запусков.</li>
 </ul>
 
 <h2 id="troubleshooting">7. Решение проблем</h2>
@@ -343,14 +408,14 @@ source .venv/bin/activate</code></pre>
     <th style="width:35%">Решение</th>
   </tr>
   <tr>
-    <td><code>Exit code: 1</code><br>Secrets file not found</td>
-    <td>Файл <code>.secrets</code> отсутствует по указанному пути</td>
-    <td>Создайте файл <code>d:\projects\fullstack-demo\.secrets</code> с токенами</td>
+    <td><code>Exit code: 1</code><br>Invalid configuration</td>
+    <td>Ошибка в <code>config.json</code> или отсутствует файл секретов</td>
+    <td>Проверьте синтаксис и секции <code>SCAN</code> / <code>ANALYSIS</code> / <code>LLM</code></td>
   </tr>
   <tr>
-    <td><code>Exit code: 2</code><br>GITHUB_TOKEN not found / empty</td>
-    <td>Токен отсутствует или пуст в файле секретов</td>
-    <td>Проверьте формат: <code>GITHUB_TOKEN=ghp_...</code></td>
+    <td><code>Exit code: 2</code><br>Authentication failed</td>
+    <td>Нет доступа к git-репозиторию (приватный репозиторий, истёк токен)</td>
+    <td>Проверьте <code>GITHUB_TOKEN</code> или настройте SSH-ключ; убедитесь, что git может клонировать репозиторий вручную</td>
   </tr>
   <tr>
     <td><code>Exit code: 3</code><br>No LLM models available</td>
@@ -358,55 +423,65 @@ source .venv/bin/activate</code></pre>
     <td>Запустите Ollama или проверьте <code>MISTRAL_API_KEY</code> и интернет-соединение</td>
   </tr>
   <tr>
-    <td><code>Exit code: 5</code><br>Repository not found</td>
-    <td>Репозиторий не существует или нет доступа</td>
-    <td>Проверьте URL в <code>GIT_PROJECT</code>, убедитесь в правах доступа</td>
+    <td><code>Exit code: 4</code><br>Invalid arguments</td>
+    <td>Некорректный аргумент командной строки</td>
+    <td>Проверьте <code>--help</code> и значения параметров (например, <code>--days</code>)</td>
   </tr>
   <tr>
-    <td><code>Exit code: 6</code><br>GITHUB_MODELS_TOKEN missing</td>
-    <td>Токен отсутствует или пуст (при <code>LLM_PROVIDER=github_models</code>). Сервис GitHub Models закрыт 30.07.2026</td>
-    <td>Используйте Mistral AI вместо GitHub Models</td>
-  </tr>
-  <tr>
-    <td><code>Exit code: 7</code><br>GROQ_API_KEY missing</td>
-    <td>Ключ отсутствует или пуст в файле секретов (при <code>LLM_PROVIDER=groq</code>)</td>
-    <td>Добавьте в <code>.secrets</code>: <code>GROQ_API_KEY=gsk_...</code></td>
+    <td><code>Exit code: 5</code><br>Repository unavailable</td>
+    <td>Ни один проект не удалось обработать из-за ошибок доступа</td>
+    <td>Проверьте URL/пути в <code>SCAN.GIT_PROJECTS</code> и права доступа</td>
   </tr>
   <tr>
     <td><code>Exit code: 8</code><br>MISTRAL_API_KEY missing</td>
-    <td>Ключ отсутствует или пуст в файле секретов (при <code>LLM_PROVIDER=mistral</code>)</td>
-    <td>Добавьте в <code>.secrets</code>: <code>MISTRAL_API_KEY=...</code></td>
+    <td>Ключ отсутствует или пуст в файле секретов (при <code>LLM.PROVIDER=mistral</code>)</td>
+    <td>Добавьте в <code>.secrets</code>: <code>MISTRAL_API_KEY=...</code> или выберите Ollama</td>
   </tr>
   <tr>
     <td><code>Exit code: 9</code><br>Database error</td>
     <td>Ошибка открытия или записи в базу данных</td>
-    <td>Проверьте права на запись в каталог <code>db/</code></td>
+    <td>Проверьте права на запись в каталог <code>db/</code> и что БД не заблокирована</td>
   </tr>
   <tr>
-    <td><code>BadCredentialsException: 401</code></td>
-    <td>Недействительный GitHub токен</td>
-    <td>Создайте новый токен на github.com/settings/tokens</td>
+    <td><code>Exit code: 10</code><br>Incomplete markers</td>
+    <td>Режим <code>scan --strict</code>: найдены маркеры без <code>id</code>/<code>point</code></td>
+    <td>Исправьте маркеры или запустите без <code>--strict</code></td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 11</code><br>Partial success</td>
+    <td>Часть проектов, веток или файлов обработана с ошибками</td>
+    <td>Смотрите предупреждения в консоли и <code>logs/analysis.log</code> / <code>logs/scan.log</code></td>
+  </tr>
+  <tr>
+    <td><code>Exit code: 12</code><br>Schema mismatch</td>
+    <td>Версия <code>analysis.db</code> или <code>scan.db</code> не поддерживается либо схема повреждена</td>
+    <td>Восстановите БД из бэкапа или удалите её для пересоздания (с потерей истории)</td>
+  </tr>
+  <tr>
+    <td>HTTP 429 от Mistral</td>
+    <td>Исчерпан лимит бесплатного тарифа</td>
+    <td>Дождитесь сброса квоты или используйте Ollama</td>
   </tr>
   <tr>
     <td>Модель не найдена в Ollama</td>
     <td>Указанная модель не установлена</td>
-    <td>Установите: <code>ollama pull llama3.1:8b</code></td>
+    <td>Установите: <code>ollama pull &lt;model&gt;</code> и проверьте <code>ollama list</code></td>
   </tr>
   <tr>
     <td><code>No commits found</code></td>
     <td>В указанный период нет коммитов</td>
-    <td>Увеличьте <code>GIT_DAY</code> или проверьте репозиторий</td>
+    <td>Увеличьте <code>ANALYSIS.GIT_DAY</code> или проверьте ветки</td>
   </tr>
   <tr>
     <td>Медленный анализ</td>
     <td>Большой репозиторий или медленная модель</td>
-    <td>Уменьшите <code>GIT_DAY</code>, используйте меньшую модель Ollama</td>
+    <td>Уменьшите <code>ANALYSIS.GIT_DAY</code>, используйте меньшую модель Ollama</td>
   </tr>
 </table>
 
 <div class="warning">
-  <div class="warning-title">Важно: GitHub API Rate Limits</div>
-  <p style="margin-bottom:0;">Без аутентификации GitHub ограничивает запросы до 60/час. С токеном — 5000/час. Утилита использует retry с backoff, но при частом запуске лимиты могут исчерпываться.</p>
+  <div class="warning-title">Git-зеркала и диск</div>
+  <p style="margin-bottom:0;">Коммиты и патчи читаются из локальных bare-зеркал в <code>SCAN.MIRROR_DIR</code>, а не через GitHub API. Удалённые репозитории по умолчанию клонируются частично (<code>--filter=blob:none</code>), поэтому первый запуск требует сети, а повторные — только <code>git fetch</code>. Следите за свободным местом в каталоге <code>db/repos/</code>.</p>
 </div>
 
 <h3>Проверка доступности Ollama</h3>
@@ -429,7 +504,7 @@ MISTRAL_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
 </div>
 
 <div class="footer">
-  scan-git-push v0.1.0 · LLM-powered git commit analysis · Generated 2026-10-24
+  scan-git-push v0.2.0 · LLM-powered git commit analysis · Обновлено 2026-11-02
 </div>
 
 </div>

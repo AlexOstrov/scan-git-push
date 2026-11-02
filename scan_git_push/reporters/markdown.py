@@ -19,16 +19,18 @@ class MarkdownReporter:
         repo_name: str,
         days: int,
         output_dir: Path,
+        project_url: str = "",
     ) -> Path:
         """Write the Markdown report and return the file path."""
         date_str = datetime.now().strftime("%Y%m%d")
-        filename = output_dir / f"{repo_name}_{date_str}.md"
+        filename = Path(output_dir) / f"{repo_name}_{date_str}.md"
 
         lines: list[str] = [
             f"# Git Push Analysis: {repo_name}",
             "",
-            f"**Period:** last {days} days  ",
-            f"**Generated:** {datetime.now().isoformat()}  ",
+            f"**Project:** {project_url or repo_name}  ",
+            f"**Period:** last {days} days (committer date)  ",
+            f"**Generated:** {datetime.now().isoformat(timespec='seconds')}  ",
             f"**Commits analyzed:** {len(results)}",
             "",
             "---",
@@ -46,18 +48,31 @@ class MarkdownReporter:
         return filename
 
     def _commit_to_md(self, result: AnalysisResult) -> list[str]:
-        """Convert a single commit analysis to Markdown."""
         lines = [
             f"## {result.sha[:8]} — {result.author} ({result.date[:10]})",
             "",
-            f"**Message:** {result.message.splitlines()[0]}",
+            f"**Message:** {result.subject}",
             "",
         ]
 
-        if result.files:
+        if result.file_changes:
             lines.append("**Files changed:**")
-            for f in result.files:
-                lines.append(f"- `{f}`")
+            lines.append("")
+            lines.append("| File | Status | +/- |")
+            lines.append("|------|--------|-----|")
+            for file in result.file_changes:
+                delta = "binary" if file.is_binary else f"+{file.additions} -{file.deletions}"
+                lines.append(f"| `{file.path}` | {file.status} | {delta} |")
+            lines.append("")
+        elif result.files:
+            lines.append("**Files changed:**")
+            for path in result.files:
+                lines.append(f"- `{path}`")
+            lines.append("")
+
+        if result.requirements:
+            labels = ", ".join(f"`{label}`" for label in result.requirement_labels)
+            lines.append(f"**Affected requirements:** {labels}")
             lines.append("")
 
         if result.summary:
@@ -73,15 +88,23 @@ class MarkdownReporter:
         return lines
 
     def _overall_to_md(self, results: list[AnalysisResult]) -> list[str]:
-        """Generate overall summary section."""
-        total_files = sum(len(r.files) for r in results)
+        total_files = sum(len(r.file_changes or r.files) for r in results)
         total_chunks = sum(r.chunks_analyzed for r in results)
+        total_additions = sum(r.additions for r in results)
+        total_deletions = sum(r.deletions for r in results)
+        requirements = sorted(
+            {label for result in results for label in result.requirement_labels}
+        )
 
-        return [
+        lines = [
             "## Overall Summary",
             "",
             f"- **Commits analyzed:** {len(results)}",
             f"- **Files changed:** {total_files}",
+            f"- **Lines:** +{total_additions} / -{total_deletions}",
             f"- **LLM chunks used:** {total_chunks}",
-            "",
         ]
+        if requirements:
+            lines.append(f"- **Affected requirements:** {', '.join(requirements)}")
+        lines.append("")
+        return lines
