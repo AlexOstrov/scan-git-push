@@ -353,13 +353,17 @@ python -m scan_git_push analyze --days 7</code></pre>
 <h3>Генерация отчёта из базы данных (без LLM)</h3>
 <p>Команда <code>report-from-db</code> позволяет сгенерировать отчёты (консоль, Markdown, HTML) из уже сохранённых в БД данных, без вызова LLM:</p>
 <pre><code>python -m scan_git_push report-from-db --days 30
-python -m scan_git_push report-from-db --project d:/projects/repo-b --json</code></pre>
+python -m scan_git_push report-from-db --project d:/projects/repo-b --json
+python -m scan_git_push report-from-db --req
+python -m scan_git_push report-from-db --req --project d:/projects/repo-b --json</code></pre>
 <ul style="padding-left:20px;">
   <li><code>--config</code> / <code>-c</code> — путь к config.json</li>
   <li><code>--days</code> / <code>-d</code> — период в днях (переопределяет <code>ANALYSIS.GIT_DAY</code>)</li>
   <li><code>--project</code> / <code>-p</code> — ограничить отчёты указанными проектами</li>
+  <li><code>--req</code> — вместо отчёта по коммитам собрать HTML-отчёт «Отчет по требованиям и разделам» из <code>scan.db</code></li>
   <li><code>--json</code> — машиночитаемый результат</li>
 </ul>
+<p>С <code>--req</code> отчёт группируется по требованию → разделу и показывает проект, ветку, коммит, файл, номер строки, коммитера и исходный маркер для каждого вхождения, а также итоги по количеству требований и разделов. Файл: <code>reports/requirements_{YYYYMMDD}.html</code>. <code>analysis.db</code> и LLM не нужны.</p>
 <p>Это полезно, когда нужно повторно сформировать отчёт за предыдущие периоды, не тратя лимиты LLM.</p>
 
 <h3>Режим scan: маркеры требований без LLM</h3>
@@ -370,6 +374,8 @@ python -m scan_git_push scan --dry-run --strict
 python -m scan_git_push --scan --json   # устаревший алиас</code></pre>
 <pre><code>&lt;!-- REQ-META id="REQ_1" point="1.1" name="Название требования" --&gt;</code></pre>
 <ul style="padding-left:20px;">
+  <li>Требования (<code>id</code>) глобальны: одинаковые <code>id</code> и <code>point</code> в разных проектах — это одно требование и один раздел.</li>
+  <li>Завершающая точка в <code>point</code> игнорируется: <code>point="5.5.1."</code> и <code>point="5.5.1"</code> идентичны.</li>
   <li>Старые форматы (<code>ID_REQ</code>, <code>ID_EXAMPLE</code>, маркер без <code>--&gt;</code>) не разбираются и дают предупреждение <code>[WARN] legacy marker format</code>.</li>
   <li>По умолчанию сканируются только <code>*.txt</code> и <code>*.md</code>; <code>SCAN.EXCLUDE</code> имеет приоритет над include.</li>
   <li>Symlink, submodule, LFS-указатели, бинарные и слишком большие файлы пропускаются с диагностикой.</li>
@@ -395,7 +401,7 @@ python -m scan_git_push --scan --json   # устаревший алиас</code>
 <h3>Базы данных</h3>
 <ul style="padding-left:20px;">
   <li><code>db/analysis.db</code> — проанализированные коммиты и файлы (схема v1).</li>
-  <li><code>db/scan.db</code> — проекты, ветки, снимки файлов, требования, пункты и вхождения маркеров (схема v1).</li>
+  <li><code>db/scan.db</code> — проекты, ветки, снимки файлов, глобальные требования, пункты и вхождения маркеров (схема v2).</li>
   <li><code>db/repos/</code> — bare-зеркала проектов; <code>logs/</code> — журналы запусков.</li>
 </ul>
 

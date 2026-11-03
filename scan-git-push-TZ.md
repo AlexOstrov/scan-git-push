@@ -221,6 +221,7 @@ MISTRAL_API_KEY=...    # обязателен только для провайд
 2. Поддерживает `--project` (повторяемый) и `--json`.
 3. Формирует отчёты по каждому проекту и сводный отчёт; LLM не вызывается.
 4. Если проектов в БД нет — сообщение и код `0`.
+5. `--req` переключает команду на HTML-отчёт «Отчет по требованиям и разделам» из `scan.db` (без `analysis.db` и LLM): группировка требование → раздел, для каждого вхождения — проект, ветка, коммит, файл, номер строки, коммитер и `raw_marker`; итоги по требованиям и разделам. Файл `reports/requirements_YYYYMMDD.html`; `--project` фильтрует проекты, `--json` возвращает `report`, `requirements`, `sections`, `projects`, `exit_code`. Подробности — в `dop_tz01.md`.
 
 ---
 
@@ -297,7 +298,7 @@ MISTRAL_API_KEY=...    # обязателен только для провайд
 python -m scan_git_push [main|analyze] [--config PATH] [--project URL ...]
        [--days N] [--model PROVIDER/MODEL] [--non-interactive] [--json] [--reanalyze]
 python -m scan_git_push report-from-db [--config PATH] [--project URL ...]
-       [--days N] [--json]
+       [--days N] [--req] [--json]
 python -m scan_git_push scan ...        # см. dop_tz01.md
 ```
 

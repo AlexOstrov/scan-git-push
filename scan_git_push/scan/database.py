@@ -1,4 +1,4 @@
-"""SQLite storage for the ``scan`` mode (``scan.db``, schema version 1).
+"""SQLite storage for the ``scan`` mode (``scan.db``, schema version 2).
 
 The schema is created from scratch; migrations are intentionally not supported
 (``dop_tz01.md``, section 7.5). The database never stores file contents.
@@ -18,7 +18,7 @@ from loguru import logger
 
 from scan_git_push.git.url import is_local_path, normalize_url, url_key
 
-SCAN_SCHEMA_VERSION = 1
+SCAN_SCHEMA_VERSION = 2
 RUNNING_RUN_TTL = timedelta(hours=24)
 
 SCAN_SCHEMA_SQL = """
@@ -39,13 +39,11 @@ CREATE TABLE IF NOT EXISTS git_project (
 
 CREATE TABLE IF NOT EXISTS req (
     id              INTEGER PRIMARY KEY,
-    git_project_id  INTEGER NOT NULL REFERENCES git_project(id) ON DELETE CASCADE,
-    code            TEXT    NOT NULL,
+    code            TEXT    NOT NULL UNIQUE,
     name            TEXT    NOT NULL DEFAULT 'Требование без наименования',
     status          INTEGER NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-    UNIQUE (git_project_id, code)
+    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS point (
@@ -103,9 +101,6 @@ CREATE TABLE IF NOT EXISTS scan_run (
     message         TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_req_project
-    ON req(git_project_id);
-
 CREATE INDEX IF NOT EXISTS idx_point_req
     ON point(req_id);
 
@@ -160,7 +155,7 @@ def author_from_url(value: str, base_dir: Path | None = None) -> str | None:
 
 
 class ScanDatabase:
-    """Manages ``scan.db`` (schema version 1)."""
+    """Manages ``scan.db`` (schema version 2)."""
 
     def __init__(self, db_path: Path | str) -> None:
         path = Path(db_path)
@@ -259,7 +254,8 @@ class ScanDatabase:
                 if version != SCAN_SCHEMA_VERSION:
                     raise ScanSchemaVersionError(
                         f"{self.db_path}: schema version {version} is not supported "
-                        f"(expected {SCAN_SCHEMA_VERSION})"
+                        f"(expected {SCAN_SCHEMA_VERSION}); "
+                        "delete the database and re-run scan"
                     )
         except ScanSchemaVersionError:
             raise
@@ -487,33 +483,31 @@ class ScanDatabase:
     def upsert_req(
         self,
         conn: sqlite3.Connection,
-        project_id: int,
         code: str,
         name: str | None,
     ) -> tuple[int, bool, str | None, str | None]:
-        """Insert or update a requirement.
+        """Insert or update a requirement (unique across all projects).
 
         Returns ``(req_id, created, previous_name, new_name)``; the last two are
         only set when a non-empty name replaced a different value.
         """
         row = conn.execute(
-            "SELECT id, name FROM req WHERE git_project_id = ? AND code = ?",
-            (project_id, code),
+            "SELECT id, name FROM req WHERE code = ?",
+            (code,),
         ).fetchone()
         if row is None:
             conn.execute(
-                "INSERT INTO req (git_project_id, code, name, status, updated_at) "
-                "VALUES (?, ?, ?, 1, ?)",
+                "INSERT INTO req (code, name, status, updated_at) "
+                "VALUES (?, ?, 1, ?)",
                 (
-                    project_id,
                     code,
                     name or "Требование без наименования",
                     now_iso(),
                 ),
             )
             new_row = conn.execute(
-                "SELECT id FROM req WHERE git_project_id = ? AND code = ?",
-                (project_id, code),
+                "SELECT id FROM req WHERE code = ?",
+                (code,),
             ).fetchone()
             return int(new_row["id"]), True, None, None
 
@@ -617,48 +611,49 @@ class ScanDatabase:
         return removed
 
     def recompute_statuses(
-        self, conn: sqlite3.Connection, project_id: int
+        self, conn: sqlite3.Connection
     ) -> tuple[int, int]:
-        """Archive points/requirements without occurrences.
+        """Archive points/requirements without occurrences (globally).
+
+        Requirements are shared by all projects, so statuses are computed over
+        the whole database: an occurrence in any project keeps a requirement
+        and its section active.
 
         Returns ``(points_archived, reqs_archived)``.
         """
-        project_points = (
-            "SELECT p.id FROM point p JOIN req r ON r.id = p.req_id "
-            "WHERE r.git_project_id = ?"
-        )
         archived_points = conn.execute(
-            f"SELECT COUNT(*) FROM ({project_points}) p "
-            "WHERE NOT EXISTS (SELECT 1 FROM point_content pc WHERE pc.point_id = p.id) "
-            "AND (SELECT status FROM point WHERE id = p.id) = 1",
-            (project_id,),
+            "SELECT COUNT(*) FROM point p WHERE p.status = 1 "
+            "AND NOT EXISTS (SELECT 1 FROM point_content pc WHERE pc.point_id = p.id)"
         ).fetchone()[0]
 
         conn.execute(
-            f"UPDATE point SET status = 0, updated_at = ? WHERE id IN ({project_points}) "
+            "UPDATE point SET status = 0, updated_at = ? "
+            "WHERE status = 1 "
             "AND NOT EXISTS (SELECT 1 FROM point_content pc WHERE pc.point_id = point.id)",
-            (now_iso(), project_id),
+            (now_iso(),),
         )
         conn.execute(
-            f"UPDATE point SET status = 1, updated_at = ? WHERE id IN ({project_points}) "
+            "UPDATE point SET status = 1, updated_at = ? "
+            "WHERE status = 0 "
             "AND EXISTS (SELECT 1 FROM point_content pc WHERE pc.point_id = point.id)",
-            (now_iso(), project_id),
+            (now_iso(),),
         )
 
         archived_reqs = conn.execute(
-            "SELECT COUNT(*) FROM req r WHERE r.git_project_id = ? AND r.status = 1 "
-            "AND NOT EXISTS (SELECT 1 FROM point p WHERE p.req_id = r.id AND p.status = 1)",
-            (project_id,),
+            "SELECT COUNT(*) FROM req r WHERE r.status = 1 "
+            "AND NOT EXISTS (SELECT 1 FROM point p WHERE p.req_id = r.id AND p.status = 1)"
         ).fetchone()[0]
         conn.execute(
-            "UPDATE req SET status = 1, updated_at = ? WHERE git_project_id = ? "
+            "UPDATE req SET status = 1, updated_at = ? "
+            "WHERE status = 0 "
             "AND EXISTS (SELECT 1 FROM point p WHERE p.req_id = req.id AND p.status = 1)",
-            (now_iso(), project_id),
+            (now_iso(),),
         )
         conn.execute(
-            "UPDATE req SET status = 0, updated_at = ? WHERE git_project_id = ? "
+            "UPDATE req SET status = 0, updated_at = ? "
+            "WHERE status = 1 "
             "AND NOT EXISTS (SELECT 1 FROM point p WHERE p.req_id = req.id AND p.status = 1)",
-            (now_iso(), project_id),
+            (now_iso(),),
         )
         return int(archived_points), int(archived_reqs)
 
@@ -682,14 +677,51 @@ class ScanDatabase:
             FROM point_content pc
             JOIN point p ON p.id = pc.point_id
             JOIN req r ON r.id = p.req_id
-            JOIN git_project gp ON gp.id = r.git_project_id
             JOIN file_snapshot fs ON fs.id = pc.file_id
+            JOIN git_project gp ON gp.id = fs.git_project_id
         """
         params: list[Any] = []
         if project_url is not None:
             query += " WHERE gp.url = ?"
             params.append(project_url)
         query += " ORDER BY gp.url, r.code, p.point, fs.branch, fs.path, pc.line_no"
+        with self.connect(readonly=True) as conn:
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
+
+    def requirement_report(
+        self, project_keys: Sequence[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return active requirement occurrences for the HTML report.
+
+        Every row is one marker occurrence: requirement, its section, and the
+        project/branch/commit/file where the marker currently lives.
+        """
+        query = """
+            SELECT gp.url            AS project_url,
+                   r.code            AS code,
+                   r.name            AS name,
+                   p.point           AS point,
+                   fs.branch         AS branch,
+                   fs.commit_sha     AS commit_sha,
+                   fs.path           AS path,
+                   fs.committer      AS committer,
+                   pc.line_no        AS line_no,
+                   pc.raw_marker     AS raw_marker
+            FROM point_content pc
+            JOIN point p ON p.id = pc.point_id
+            JOIN req r ON r.id = p.req_id
+            JOIN file_snapshot fs ON fs.id = pc.file_id
+            JOIN git_project gp ON gp.id = fs.git_project_id
+            WHERE r.status = 1 AND p.status = 1
+        """
+        params: list[Any] = []
+        if project_keys:
+            placeholders = ",".join("?" for _ in project_keys)
+            query += f" AND gp.url_key IN ({placeholders})"
+            params.extend(project_keys)
+        query += (
+            " ORDER BY r.code, p.point, gp.url, fs.branch, fs.path, pc.line_no"
+        )
         with self.connect(readonly=True) as conn:
             return [dict(row) for row in conn.execute(query, params).fetchall()]
 

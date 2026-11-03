@@ -35,9 +35,14 @@ from scan_git_push.git.runner import ensure_git_available
 from scan_git_push.git.url import repo_name, url_key
 from scan_git_push.llm.registry import ModelOption, ModelRegistry
 from scan_git_push.memory.manager import MemoryManager
+from scan_git_push.reporters.requirements import RequirementReporter
 from scan_git_push.reporters.service import ProjectReport, ReportService
 from scan_git_push.reporters.summary import ProjectSection
-from scan_git_push.scan.database import ScanDatabaseError, ScanSchemaVersionError
+from scan_git_push.scan.database import (
+    ScanDatabase,
+    ScanDatabaseError,
+    ScanSchemaVersionError,
+)
 from scan_git_push.scan.scanner import (
     ScanOptions,
     Scanner,
@@ -147,6 +152,45 @@ def _open_database(settings: Settings) -> DatabaseManager:
         typer.echo(f"Error: database failure: {exc}", err=True)
         raise typer.Exit(code=EXIT_DB) from exc
     return db
+
+
+def _generate_requirements_report(
+    settings: Settings,
+    console: Console,
+    projects: Optional[list[str]],
+    json_output: bool,
+) -> None:
+    """Build the HTML report of requirements and sections from ``scan.db``."""
+    project_keys = (
+        [url_key(ref, settings.base_dir) for ref in projects] if projects else None
+    )
+    db = ScanDatabase(settings.scan_db_path)
+    try:
+        db.validate()
+        rows = db.requirement_report(project_keys)
+    except ScanSchemaVersionError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=EXIT_SCHEMA) from exc
+    except (ScanDatabaseError, sqlite3.Error) as exc:
+        typer.echo(f"Error: scan database failure: {exc}", err=True)
+        raise typer.Exit(code=EXIT_DB) from exc
+
+    reporter = RequirementReporter()
+    path, stats = reporter.generate(rows, settings.output_dir)
+
+    if json_output:
+        payload = {
+            "exit_code": EXIT_OK,
+            **stats,
+            "projects": project_keys or [],
+        }
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+
+    console.print(f"Requirements: {stats['requirements']}")
+    console.print(f"Sections:     {stats['sections']}")
+    console.print(f"  HTML:     [green]{path}[/green]")
+    console.print("\n[bold green]Done![/bold green]")
 
 
 def _resolve_projects(settings: Settings, projects: Optional[list[str]]) -> list[str]:
@@ -657,6 +701,11 @@ def report_from_db(
         None, "--project", "-p", help="Project URL/path (repeatable); default: all projects in DB"
     ),
     days: Optional[int] = typer.Option(None, "--days", "-d", help="Days to look back"),
+    req: bool = typer.Option(
+        False,
+        "--req",
+        help="Build an HTML report of requirements and sections from scan.db",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON result"),
 ) -> None:
     """Generate reports from the database without calling the LLM."""
@@ -665,6 +714,11 @@ def report_from_db(
 
     settings = _load_settings(config_path)
     _setup_logging(settings)
+
+    if req:
+        _generate_requirements_report(settings, console, projects, json_output)
+        return
+
     report_days = days if days is not None else settings.analysis.git_day
     if report_days < 1 or report_days > 365:
         console.print("[red]Error: --days must be between 1 and 365[/red]")

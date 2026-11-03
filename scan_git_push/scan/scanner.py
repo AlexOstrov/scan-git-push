@@ -805,7 +805,7 @@ class Scanner:
                     occurrences: list[tuple[int, int, str]] = []
                     for occurrence in scanned.occurrences:
                         req_id, created, old_name, new_name = self.db.upsert_req(
-                            conn, project_id, occurrence.code, occurrence.name
+                            conn, occurrence.code, occurrence.name
                         )
                         if created:
                             created_reqs.add(req_id)
@@ -848,7 +848,7 @@ class Scanner:
                     conn, project_id, [item.name for item in branch_results]
                 )
 
-            archived_points, _archived_reqs = self.db.recompute_statuses(conn, project_id)
+            archived_points, _archived_reqs = self.db.recompute_statuses(conn)
 
             self.db.finish_run(
                 conn,

@@ -91,6 +91,23 @@ class TestValidation:
         result = parse_markers('<!-- REQ-META id="REQ_5" point="4.a" -->')
         assert result.errors[0].invalid == ["point"]
 
+    def test_trailing_dot_in_point_is_ignored(self) -> None:
+        result = parse_markers(
+            '<!-- REQ-META id="TR_3" point="5.5.1." name="Требование 3" -->'
+        )
+        assert not result.errors
+        assert result.occurrences[0].point == "5.5.1"
+        assert result.occurrences[0].raw_marker.endswith('point="5.5.1." name="Требование 3" -->')
+
+    def test_point_without_trailing_dot_is_unchanged(self) -> None:
+        result = parse_markers('<!-- REQ-META id="TR_3" point="5.5.1" -->')
+        assert result.occurrences[0].point == "5.5.1"
+
+    def test_point_of_only_dots_is_invalid(self) -> None:
+        result = parse_markers('<!-- REQ-META id="TR_3" point="." -->')
+        assert result.occurrences == []
+        assert result.errors[0].invalid == ["point"]
+
     def test_duplicate_key(self) -> None:
         result = parse_markers(
             '<!-- REQ-META id="REQ_5" point="4.1" id="REQ_6" -->'

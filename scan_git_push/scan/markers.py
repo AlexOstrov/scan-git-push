@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 # Bump whenever the parsing rules change: it forces a re-parse of every file.
-SCAN_PARSER_VERSION = 1
+# v2: trailing dots in ``point`` are ignored (``5.5.1.`` == ``5.5.1``).
+SCAN_PARSER_VERSION = 2
 
 MAX_MARKER_LENGTH = 4096
 MAX_NAME_LENGTH = 255
@@ -36,6 +37,15 @@ class Occurrence:
     name: str | None
     line_no: int
     raw_marker: str
+
+
+def normalize_point(value: str) -> str:
+    """Normalize a section number: ``5.5.1.`` and ``5.5.1`` are identical.
+
+    A trailing dot is a common typo in hand-written markers and carries no
+    meaning, so it is stripped before validation and storage.
+    """
+    return value.strip().rstrip(".")
 
 
 @dataclass
@@ -217,15 +227,21 @@ def _parse_canonical_line(
 
     missing: list[str] = []
     invalid: list[str] = []
-    for required in ("id", "point"):
-        if not attrs.get(required):
-            missing.append(required)
-
     code = (attrs.get("id") or "").strip()
-    point = (attrs.get("point") or "").strip()
+    raw_point = (attrs.get("point") or "").strip()
+    point = normalize_point(raw_point)
+
+    if not code:
+        missing.append("id")
+    if not raw_point:
+        missing.append("point")
+
     if code and not _ID_RE.match(code):
         invalid.append("id")
-    if point and not _POINT_RE.match(point):
+    if raw_point and not point:
+        # A point that consists only of dots carries no section number.
+        invalid.append("point")
+    elif point and not _POINT_RE.match(point):
         invalid.append("point")
 
     name = attrs.get("name") or ""

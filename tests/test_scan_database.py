@@ -1,4 +1,4 @@
-"""Tests for ``scan.db`` (schema version 1)."""
+"""Tests for ``scan.db`` (schema version 2)."""
 
 from __future__ import annotations
 
@@ -37,8 +37,9 @@ def _insert_project(conn: sqlite3.Connection, db: ScanDatabase) -> int:
 
 
 class TestSchema:
-    def test_creates_version_1(self, scan_db: ScanDatabase) -> None:
+    def test_creates_current_version(self, scan_db: ScanDatabase) -> None:
         assert scan_db.schema_version() == SCAN_SCHEMA_VERSION
+        assert SCAN_SCHEMA_VERSION == 2
         with scan_db.connect() as conn:
             names = {
                 row[0]
@@ -74,7 +75,7 @@ class TestSchema:
         first.initialize()
         second = ScanDatabase(tmp_path / "scan.db")
         second.initialize()
-        assert second.schema_version() == 1
+        assert second.schema_version() == SCAN_SCHEMA_VERSION
 
     def test_missing_schema_version_raises(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.db"
@@ -86,7 +87,7 @@ class TestSchema:
         with pytest.raises(ScanSchemaVersionError):
             ScanDatabase(path).initialize()
 
-    @pytest.mark.parametrize("version", [0, 2, 99])
+    @pytest.mark.parametrize("version", [0, 1, 99])
     def test_incompatible_version_raises(self, tmp_path: Path, version: int) -> None:
         path = tmp_path / "scan.db"
         db = ScanDatabase(path)
@@ -110,7 +111,7 @@ class TestSchema:
         path.write_bytes(b"")
         db = ScanDatabase(path)
         assert db.initialize(create=True) is True
-        assert db.schema_version() == 1
+        assert db.schema_version() == SCAN_SCHEMA_VERSION
 
     def test_dry_run_does_not_create(self, tmp_path: Path) -> None:
         path = tmp_path / "scan.db"
@@ -124,7 +125,7 @@ class TestCascades:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
             _insert_hash(conn, _hash("a"))
-            req_id, _, _, _ = scan_db.upsert_req(conn, project_id, "REQ_1", "Name")
+            req_id, _, _, _ = scan_db.upsert_req(conn, "REQ_1", "Name")
             point_id, _ = scan_db.upsert_point(conn, req_id, "1.1")
             file_id = scan_db.upsert_snapshot(
                 conn,
@@ -142,12 +143,15 @@ class TestCascades:
             scan_db.create_run(conn, project_id)
         return project_id
 
-    def test_delete_project_removes_everything(self, scan_db: ScanDatabase) -> None:
+    def test_delete_project_removes_project_data(self, scan_db: ScanDatabase) -> None:
         project_id = self._populate(scan_db)
         with scan_db.transaction() as conn:
             conn.execute("DELETE FROM git_project WHERE id = ?", (project_id,))
-            for table in ("req", "point", "point_content", "file_snapshot", "scan_run"):
+            for table in ("point_content", "file_snapshot", "scan_run"):
                 assert conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+            # Requirements are global and are archived by reconciliation, not
+            # deleted together with a project.
+            assert conn.execute("SELECT COUNT(*) FROM req").fetchone()[0] == 1
 
     def test_delete_snapshot_removes_occurrences(self, scan_db: ScanDatabase) -> None:
         self._populate(scan_db)
@@ -159,18 +163,25 @@ class TestCascades:
 
 
 class TestConstraints:
-    def test_same_code_in_different_projects(self, scan_db: ScanDatabase) -> None:
+    def test_same_code_is_shared_across_projects(self, scan_db: ScanDatabase) -> None:
         with scan_db.transaction() as conn:
-            first = _insert_project(conn, scan_db)
-            second = scan_db.ensure_project(conn, "https://github.com/owner/other")
-            scan_db.upsert_req(conn, first, "REQ_1", "one")
-            scan_db.upsert_req(conn, second, "REQ_1", "two")
-            assert conn.execute("SELECT COUNT(*) FROM req").fetchone()[0] == 2
+            _insert_project(conn, scan_db)
+            scan_db.ensure_project(conn, "https://github.com/owner/other")
+            first, created, _, _ = scan_db.upsert_req(conn, "REQ_1", "one")
+            second, created_again, old, new = scan_db.upsert_req(
+                conn, "REQ_1", "two"
+            )
+            assert first == second
+            assert created is True
+            assert created_again is False
+            assert (old, new) == ("one", "two")
+            assert conn.execute("SELECT COUNT(*) FROM req").fetchone()[0] == 1
+            assert conn.execute("SELECT name FROM req").fetchone()[0] == "two"
 
     def test_unique_point_per_req(self, scan_db: ScanDatabase) -> None:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
-            req_id, _, _, _ = scan_db.upsert_req(conn, project_id, "REQ_1", None)
+            req_id, _, _, _ = scan_db.upsert_req(conn, "REQ_1", None)
             first, created = scan_db.upsert_point(conn, req_id, "1.1")
             second, created_again = scan_db.upsert_point(conn, req_id, "1.1")
             assert first == second
@@ -182,7 +193,7 @@ class TestConstraints:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
             _insert_hash(conn, _hash("b"))
-            req_id, _, _, _ = scan_db.upsert_req(conn, project_id, "REQ_1", None)
+            req_id, _, _, _ = scan_db.upsert_req(conn, "REQ_1", None)
             point_id, _ = scan_db.upsert_point(conn, req_id, "1.1")
             file_id = scan_db.upsert_snapshot(
                 conn,
@@ -205,7 +216,7 @@ class TestConstraints:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
             _insert_hash(conn, _hash("c"))
-            req_id, _, _, _ = scan_db.upsert_req(conn, project_id, "REQ_1", None)
+            req_id, _, _, _ = scan_db.upsert_req(conn, "REQ_1", None)
             point_id, _ = scan_db.upsert_point(conn, req_id, "1.1")
             file_id = scan_db.upsert_snapshot(
                 conn,
@@ -228,11 +239,10 @@ class TestConstraints:
     @pytest.mark.parametrize("status", [-1, 2])
     def test_status_check(self, scan_db: ScanDatabase, status: int) -> None:
         with scan_db.transaction() as conn:
-            project_id = _insert_project(conn, scan_db)
             with pytest.raises(sqlite3.IntegrityError):
                 conn.execute(
-                    "INSERT INTO req (git_project_id, code, status) VALUES (?, 'X', ?)",
-                    (project_id, status),
+                    "INSERT INTO req (code, status) VALUES ('X', ?)",
+                    (status,),
                 )
 
 
@@ -240,9 +250,9 @@ class TestUpserts:
     def test_req_name_conflict_updates_name(self, scan_db: ScanDatabase) -> None:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
-            _, created, _, _ = scan_db.upsert_req(conn, project_id, "REQ_1", "first")
+            _, created, _, _ = scan_db.upsert_req(conn, "REQ_1", "first")
             req_id, created_again, old, new = scan_db.upsert_req(
-                conn, project_id, "REQ_1", "second"
+                conn, "REQ_1", "second"
             )
             assert created is True
             assert created_again is False
@@ -253,8 +263,8 @@ class TestUpserts:
     def test_empty_name_keeps_existing(self, scan_db: ScanDatabase) -> None:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
-            scan_db.upsert_req(conn, project_id, "REQ_1", "first")
-            req_id, _, old, new = scan_db.upsert_req(conn, project_id, "REQ_1", None)
+            scan_db.upsert_req(conn, "REQ_1", "first")
+            req_id, _, old, new = scan_db.upsert_req(conn, "REQ_1", None)
             assert (old, new) == (None, None)
             row = conn.execute("SELECT name FROM req WHERE id = ?", (req_id,)).fetchone()
             assert row["name"] == "first"
@@ -283,7 +293,7 @@ class TestUpserts:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
             _insert_hash(conn, _hash("e"))
-            req_id, _, _, _ = scan_db.upsert_req(conn, project_id, "REQ_1", None)
+            req_id, _, _, _ = scan_db.upsert_req(conn, "REQ_1", None)
             point_id, _ = scan_db.upsert_point(conn, req_id, "1.1")
             file_id = scan_db.upsert_snapshot(
                 conn,
@@ -298,18 +308,18 @@ class TestUpserts:
                 parser_version=1,
             )
             scan_db.replace_occurrences(conn, file_id, [(point_id, 1, "raw")])
-            archived, _ = scan_db.recompute_statuses(conn, project_id)
+            archived, _ = scan_db.recompute_statuses(conn)
             assert archived == 0
 
             scan_db.replace_occurrences(conn, file_id, [])
-            archived, archived_reqs = scan_db.recompute_statuses(conn, project_id)
+            archived, archived_reqs = scan_db.recompute_statuses(conn)
             assert archived == 1
             assert archived_reqs == 1
             assert conn.execute("SELECT status FROM point").fetchone()[0] == 0
             assert conn.execute("SELECT status FROM req").fetchone()[0] == 0
 
             scan_db.replace_occurrences(conn, file_id, [(point_id, 1, "raw")])
-            scan_db.recompute_statuses(conn, project_id)
+            scan_db.recompute_statuses(conn)
             assert conn.execute("SELECT status FROM point").fetchone()[0] == 1
             assert conn.execute("SELECT status FROM req").fetchone()[0] == 1
 

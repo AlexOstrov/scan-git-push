@@ -212,7 +212,7 @@ class TestSchemaAndInitialScan:
         assert project.io_errors == 0
 
         db = ScanDatabase(Settings.from_file(config).scan_db_path)
-        assert db.schema_version() == 1
+        assert db.schema_version() == 2
         occurrences = db.occurrences(project.project)
         points = {(item["code"], item["point"]) for item in occurrences}
         assert ("REQ_1", "1.1") in points
@@ -250,6 +250,29 @@ class TestSchemaAndInitialScan:
             assert hashes and all(len(value) == 64 for value in hashes)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(file_hash)")}
             assert "content" not in columns
+
+    def test_point_trailing_dot_is_normalized(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        write_text(
+            repo,
+            "docs/point.md",
+            '<!-- REQ-META id="TR_3" point="5.5.1." name="Требование 3" -->\n',
+        )
+        commit(repo, "trailing point")
+        config = make_config(
+            tmp_path,
+            [str(repo)],
+            exclude=["vendor/**"],
+            exclude_secrets=["secret.md"],
+        )
+
+        outcome, _ = run_scanner(config)
+        assert outcome.exit_code == 0
+        db = ScanDatabase(Settings.from_file(config).scan_db_path)
+        occurrences = db.occurrences(outcome.projects[0].project)
+        points = {(item["code"], item["point"]) for item in occurrences}
+        assert ("TR_3", "5.5.1") in points
+        assert not any(point.endswith(".") for _, point in points)
 
     def test_encoding_and_commit_metadata(self, config: Path) -> None:
         outcome, _ = run_scanner(config)
@@ -373,7 +396,7 @@ class TestReconciliation:
 
 
 class TestMultipleProjects:
-    def test_same_req_in_two_projects_is_independent(self, tmp_path: Path) -> None:
+    def test_same_req_in_two_projects_is_shared(self, tmp_path: Path) -> None:
         first = make_repo(tmp_path, "repo-a")
         second = make_repo(tmp_path, "repo-b")
         config = make_config(tmp_path, [str(first), str(second)])
@@ -383,13 +406,18 @@ class TestMultipleProjects:
         db = ScanDatabase(Settings.from_file(config).scan_db_path)
         with db.connect(readonly=True) as conn:
             rows = conn.execute(
-                "SELECT gp.url, r.id, r.code FROM req r "
-                "JOIN git_project gp ON gp.id = r.git_project_id "
-                "WHERE r.code = 'REQ_1'"
+                "SELECT r.code, r.id, COUNT(DISTINCT fs.git_project_id) AS projects "
+                "FROM req r "
+                "JOIN point p ON p.req_id = r.id "
+                "JOIN point_content pc ON pc.point_id = p.id "
+                "JOIN file_snapshot fs ON fs.id = pc.file_id "
+                "WHERE r.code = 'REQ_1' "
+                "GROUP BY r.id, r.code"
             ).fetchall()
-        assert len(rows) == 2
-        assert len({row["id"] for row in rows}) == 2
-        assert conn is not None
+        # Requirement ids are global: both projects contribute occurrences to
+        # the same requirement row.
+        assert len(rows) == 1
+        assert rows[0]["projects"] == 2
 
     def test_unreachable_project_does_not_stop_others(self, tmp_path: Path) -> None:
         repo = make_repo(tmp_path, "repo-a")
@@ -469,13 +497,14 @@ class TestCli:
         db = ScanDatabase(settings.scan_db_path)
         db.initialize()
         with db.transaction() as conn:
-            conn.execute("UPDATE schema_version SET version = 2")
+            conn.execute("UPDATE schema_version SET version = 1")
 
         result = self.runner.invoke(app, ["scan", "--config", str(config), "--json"])
         assert result.exit_code == 12
         payload = json.loads(result.stdout)
         assert payload["exit_code"] == 12
         assert "schema version" in payload["error"]
+        assert "delete the database" in payload["error"]
 
     def test_cli_database_failure(self, config: Path) -> None:
         settings = Settings.from_file(config)
@@ -665,8 +694,11 @@ class TestAnalysisIntegration:
             rows = conn.execute(
                 "SELECT req.code, project.url "
                 "FROM scan.req AS req "
+                "JOIN scan.point AS point ON point.req_id = req.id "
+                "JOIN scan.point_content AS pc ON pc.point_id = point.id "
+                "JOIN scan.file_snapshot AS fs ON fs.id = pc.file_id "
                 "JOIN scan.git_project AS scan_project "
-                "  ON scan_project.id = req.git_project_id "
+                "  ON scan_project.id = fs.git_project_id "
                 "JOIN main.git_project AS project "
                 "  ON project.url_key = scan_project.url_key"
             ).fetchall()

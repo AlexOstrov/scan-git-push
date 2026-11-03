@@ -15,6 +15,8 @@
 - Повторная генерация отчётов без LLM: `report-from-db`.
 - Связь коммитов с требованиями из `scan.db` (`LINK_REQUIREMENTS`).
 - Режим `scan`: поиск маркеров `<!-- REQ-META ... -->` в `*.txt`/`*.md` и ведение `db/scan.db` без LLM.
+- Требования (`id`) глобальны: одинаковые `id`/`point` в разных проектах — одно требование и один раздел.
+- Отчёт по требованиям и разделам: `report-from-db --req` (HTML, без LLM).
 - Отчёт на каждый проект + сводный `_summary_{date}`.
 - Retry с exponential backoff.
 - Артефактная память для продолжения работы между сессиями.
@@ -98,6 +100,12 @@ python -m scan_git_push analyze --reanalyze
 # отчёты из БД без LLM
 python -m scan_git_push report-from-db --days 30
 
+# HTML-отчёт по требованиям и разделам из scan.db
+python -m scan_git_push report-from-db --req
+
+# только по выбранным проектам
+python -m scan_git_push report-from-db --req --project d:/projects/repo-b
+
 # поиск маркеров требований в файлах (без LLM)
 python -m scan_git_push scan
 
@@ -117,13 +125,17 @@ python -m scan_git_push --scan --json
 
 `scan` читает tip выбранных веток через общее зеркало и сохраняет в `db/scan.db` проекты, снимки файлов, требования, пункты и вхождения маркеров. Содержимое файлов не хранится — только SHA-256 (`blob_hash`) и размер.
 
+Требования глобальны: `req.code` уникален в разрезе **всех** проектов. Одинаковые `id` и `point` в разных репозиториях — это одно требование и один раздел; привязка к проекту, ветке, коммиту и файлу хранится во вхождениях.
+
 Поддерживается только канонический маркер:
 
 ```html
 <!-- REQ-META id="REQ_1" point="1.1" name="Название требования" -->
 ```
 
-Старые форматы (`ID_REQ`, `ID_EXAMPLE`, маркер без `-->`) не разбираются и дают предупреждение `[WARN] legacy marker format`. По умолчанию сканируются `*.txt` и `*.md`; symlink, submodule и LFS-указатели не разыменовываются. `--dry-run` не создаёт и не изменяет БД, `--force` снимает зависший `running`-запуск.
+Завершающая точка в `point` игнорируется: `point="5.5.1."` и `point="5.5.1"` идентичны. Старые форматы (`ID_REQ`, `ID_EXAMPLE`, маркер без `-->`) не разбираются и дают предупреждение `[WARN] legacy marker format`. По умолчанию сканируются `*.txt` и `*.md`; symlink, submodule и LFS-указатели не разыменовываются. `--dry-run` не создаёт и не изменяет БД, `--force` снимает зависший `running`-запуск.
+
+> Схема `db/scan.db` — версия `2` (глобальные требования). Миграции не поддерживаются: БД версии `1` нужно удалить и пересоздать.
 
 ## Отчёты
 
@@ -132,6 +144,7 @@ reports/{repo}_{YYYYMMDD}.md
 reports/{repo}_{YYYYMMDD}.html
 reports/_summary_{YYYYMMDD}.md
 reports/_summary_{YYYYMMDD}.html
+reports/requirements_{YYYYMMDD}.html   # report-from-db --req
 ```
 
 HTML полностью автономен: встроенные CSS/JS, без CDN.

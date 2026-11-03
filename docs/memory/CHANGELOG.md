@@ -3,6 +3,14 @@
 - [2026-10-19 20:48] Analyzed 25 commits from fullstack-demo using ollama/gemma4:12b
 - [2026-10-21 21:12] Analyzed 3 commits from fullstack-demo using mistral/ministral-8b-latest
 
+## 2026-11-03 — обратная связь по эксплуатации
+
+- `point` с завершающей точкой нормализуется: `5.5.1.` → `5.5.1`; `point="."` отклоняется. `SCAN_PARSER_VERSION` → `2` (принудительный переразбор).
+- Требования глобальны: `req.code` теперь `UNIQUE(code)` без `git_project_id`; схема `scan.db` → `2`; статусы требований/разделов пересчитываются по всем проектам.
+- `report-from-db --req`: автономный HTML «Отчет по требованиям и разделам» (требование → раздел → вхождения: проект, ветка, коммит, файл, строка, коммитер, raw_marker) + итоги; `--project` и `--json`; `analysis.db` и LLM не нужны.
+- Тесты: нормализация `point`, глобальная уникальность, схема v2, отчёт `--req` и фильтрация по проекту.
+- Документация: `dop_tz01.md`, `README.md`, `user-guide.html`, память проекта.
+
 ## 2026-11-02 — релизная полировка (Sprint 9)
 
 - Версия `0.2.0` в `pyproject.toml` и `scan_git_push/__init__.py`; CLI печатает версию из `__version__` вместо захардкоженных строк.

@@ -63,7 +63,7 @@ class RequirementLinker:
                 JOIN point p  ON p.id = pc.point_id
                 JOIN req r    ON r.id = p.req_id
                 JOIN file_snapshot fs ON fs.id = pc.file_id
-                JOIN git_project gp   ON gp.id = r.git_project_id
+                JOIN git_project gp   ON gp.id = fs.git_project_id
                 WHERE gp.url_key = ?
                   AND r.status = 1 AND p.status = 1
                   AND fs.path IN ({placeholders})
@@ -88,17 +88,19 @@ class RequirementLinker:
         ]
 
     def all_requirements(self, project_key: str) -> list[dict[str, str]]:
-        """Return every active requirement of a project."""
+        """Return every active requirement that has a marker in a project."""
         conn = self._connect()
         if conn is None:
             return []
         try:
             rows = conn.execute(
                 """
-                SELECT r.code AS code, p.point AS point, r.name AS name
-                FROM req r
-                JOIN point p ON p.req_id = r.id
-                JOIN git_project gp ON gp.id = r.git_project_id
+                SELECT DISTINCT r.code AS code, p.point AS point, r.name AS name
+                FROM point_content pc
+                JOIN point p ON p.id = pc.point_id
+                JOIN req r ON r.id = p.req_id
+                JOIN file_snapshot fs ON fs.id = pc.file_id
+                JOIN git_project gp ON gp.id = fs.git_project_id
                 WHERE gp.url_key = ? AND r.status = 1 AND p.status = 1
                 ORDER BY r.code, p.point
                 """,
