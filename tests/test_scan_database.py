@@ -1,4 +1,4 @@
-"""Tests for ``scan.db`` (schema version 2)."""
+"""Tests for ``scan.db`` (schema version 3)."""
 
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def _insert_project(conn: sqlite3.Connection, db: ScanDatabase) -> int:
 class TestSchema:
     def test_creates_current_version(self, scan_db: ScanDatabase) -> None:
         assert scan_db.schema_version() == SCAN_SCHEMA_VERSION
-        assert SCAN_SCHEMA_VERSION == 2
+        assert SCAN_SCHEMA_VERSION == 3
         with scan_db.connect() as conn:
             names = {
                 row[0]
@@ -70,6 +70,31 @@ class TestSchema:
             }
         assert columns == {"hash", "size_bytes", "created_at"}
 
+    def test_export_and_number_columns(self, scan_db: ScanDatabase) -> None:
+        with scan_db.connect() as conn:
+            req_columns = {
+                row[1]: row for row in conn.execute("PRAGMA table_info(req)")
+            }
+            point_columns = {
+                row[1]: row for row in conn.execute("PRAGMA table_info(point)")
+            }
+            content_columns = {
+                row[1]: row for row in conn.execute("PRAGMA table_info(point_content)")
+            }
+
+        assert req_columns["is_export"]["dflt_value"] == "0"
+        assert req_columns["is_export"]["notnull"] == 1
+        assert point_columns["is_export"]["dflt_value"] == "0"
+        assert point_columns["is_export"]["notnull"] == 1
+        for name in (
+            "numbeartefact",
+            "numbercase",
+            "numberscenario",
+            "numberstep",
+        ):
+            assert name in content_columns
+            assert content_columns[name]["notnull"] == 0
+
     def test_reopen_existing_database(self, tmp_path: Path) -> None:
         first = ScanDatabase(tmp_path / "scan.db")
         first.initialize()
@@ -87,7 +112,7 @@ class TestSchema:
         with pytest.raises(ScanSchemaVersionError):
             ScanDatabase(path).initialize()
 
-    @pytest.mark.parametrize("version", [0, 1, 99])
+    @pytest.mark.parametrize("version", [0, 1, 2, 99])
     def test_incompatible_version_raises(self, tmp_path: Path, version: int) -> None:
         path = tmp_path / "scan.db"
         db = ScanDatabase(path)
@@ -343,6 +368,160 @@ class TestUpserts:
             removed = scan_db.gc_hashes(conn)
             assert removed == 1
             assert conn.execute("SELECT COUNT(*) FROM file_hash").fetchone()[0] == 1
+
+
+class TestExportFlags:
+    """``is_export`` is reset by real changes and kept by a no-op rescan."""
+
+    @staticmethod
+    def _setup(
+        scan_db: ScanDatabase, conn: sqlite3.Connection
+    ) -> tuple[int, int, int]:
+        project_id = _insert_project(conn, scan_db)
+        _insert_hash(conn, _hash("x"))
+        req_id, _, _, _ = scan_db.upsert_req(conn, "REQ_EXPORT", "Name")
+        point_id, _ = scan_db.upsert_point(conn, req_id, "1.1")
+        file_id = scan_db.upsert_snapshot(
+            conn,
+            project_id=project_id,
+            branch="main",
+            path="docs/export.md",
+            blob_hash=_hash("x"),
+            commit_sha=None,
+            author=None,
+            committer=None,
+            encoding="utf-8",
+            parser_version=1,
+        )
+        scan_db.replace_occurrences(conn, file_id, [(point_id, 1, "raw")])
+        return req_id, point_id, file_id
+
+    def test_defaults_are_zero_and_numbers_null(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            req_id, point_id, _ = self._setup(scan_db, conn)
+            req_flag = conn.execute(
+                "SELECT is_export FROM req WHERE id = ?", (req_id,)
+            ).fetchone()[0]
+            point_flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+            numbers = conn.execute(
+                "SELECT numbeartefact, numbercase, numberscenario, numberstep "
+                "FROM point_content"
+            ).fetchone()
+        assert req_flag == 0
+        assert point_flag == 0
+        assert tuple(numbers) == (None, None, None, None)
+
+    def test_req_resets_on_name_change(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            req_id, _, _ = self._setup(scan_db, conn)
+            conn.execute("UPDATE req SET is_export = 1 WHERE id = ?", (req_id,))
+            scan_db.upsert_req(conn, "REQ_EXPORT", "New name")
+            flag = conn.execute(
+                "SELECT is_export FROM req WHERE id = ?", (req_id,)
+            ).fetchone()[0]
+        assert flag == 0
+
+    def test_req_resets_on_status_change(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            req_id, _, _ = self._setup(scan_db, conn)
+            conn.execute("UPDATE req SET is_export = 1 WHERE id = ?", (req_id,))
+            conn.execute("UPDATE req SET status = 0 WHERE id = ?", (req_id,))
+            flag = conn.execute(
+                "SELECT is_export FROM req WHERE id = ?", (req_id,)
+            ).fetchone()[0]
+        assert flag == 0
+
+    def test_req_noop_upsert_keeps_flag(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            req_id, _, _ = self._setup(scan_db, conn)
+            conn.execute("UPDATE req SET is_export = 1 WHERE id = ?", (req_id,))
+            scan_db.upsert_req(conn, "REQ_EXPORT", "Name")
+            flag = conn.execute(
+                "SELECT is_export FROM req WHERE id = ?", (req_id,)
+            ).fetchone()[0]
+        assert flag == 1
+
+    def test_point_resets_on_status_change(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            _, point_id, _ = self._setup(scan_db, conn)
+            conn.execute("UPDATE point SET is_export = 1 WHERE id = ?", (point_id,))
+            conn.execute("UPDATE point SET status = 0 WHERE id = ?", (point_id,))
+            flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+        assert flag == 0
+
+    def test_point_noop_rescan_keeps_flag(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            req_id, point_id, file_id = self._setup(scan_db, conn)
+            conn.execute("UPDATE point SET is_export = 1 WHERE id = ?", (point_id,))
+            scan_db.upsert_point(conn, req_id, "1.1")
+            scan_db.replace_occurrences(conn, file_id, [(point_id, 1, "raw")])
+            flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+        assert flag == 1
+
+    def test_point_resets_on_content_insert(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            _, point_id, file_id = self._setup(scan_db, conn)
+            conn.execute("UPDATE point SET is_export = 1 WHERE id = ?", (point_id,))
+            scan_db.replace_occurrences(
+                conn, file_id, [(point_id, 1, "raw"), (point_id, 2, "other")]
+            )
+            flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+        assert flag == 0
+
+    def test_point_resets_on_content_update(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            _, point_id, file_id = self._setup(scan_db, conn)
+            conn.execute("UPDATE point SET is_export = 1 WHERE id = ?", (point_id,))
+            scan_db.replace_occurrences(conn, file_id, [(point_id, 1, "changed")])
+            flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+        assert flag == 0
+
+    def test_point_resets_on_number_change(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            _, point_id, _ = self._setup(scan_db, conn)
+            conn.execute("UPDATE point SET is_export = 1 WHERE id = ?", (point_id,))
+            conn.execute(
+                "UPDATE point_content SET numbercase = 'TC-1' "
+                "WHERE point_id = ?",
+                (point_id,),
+            )
+            flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+        assert flag == 0
+
+    def test_point_resets_on_content_delete(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            _, point_id, file_id = self._setup(scan_db, conn)
+            conn.execute("UPDATE point SET is_export = 1 WHERE id = ?", (point_id,))
+            scan_db.replace_occurrences(conn, file_id, [])
+            flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+        assert flag == 0
+
+    def test_export_update_does_not_reset_flag(self, scan_db: ScanDatabase) -> None:
+        with scan_db.transaction() as conn:
+            req_id, point_id, _ = self._setup(scan_db, conn)
+            conn.execute("UPDATE req SET is_export = 1 WHERE id = ?", (req_id,))
+            conn.execute("UPDATE point SET is_export = 1 WHERE id = ?", (point_id,))
+            req_flag = conn.execute(
+                "SELECT is_export FROM req WHERE id = ?", (req_id,)
+            ).fetchone()[0]
+            point_flag = conn.execute(
+                "SELECT is_export FROM point WHERE id = ?", (point_id,)
+            ).fetchone()[0]
+        assert (req_flag, point_flag) == (1, 1)
 
 
 class TestRuns:

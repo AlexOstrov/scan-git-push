@@ -1,8 +1,8 @@
 # Режим `scan` (дополнение к ТЗ)
 
-**Редакция:** 3.1  
-**Дата:** 01.11.2026  
-**Статус:** к реализации  
+**Редакция:** 3.2  
+**Дата:** 04.11.2026  
+**Статус:** реализовано; экспорт и заполнение номерных полей — будущая доработка  
 **Связанные документы:** `scan-git-push-TZ.md`, `config.json`, `AGENTS.md`
 
 ---
@@ -38,7 +38,9 @@
 | Одинаковые `(id, point)` | В разных проектах и в разных файлах — нормальная ситуация, не дубликат |
 | Завершающая точка в `point` | Игнорируется: `5.5.1.` и `5.5.1` идентичны |
 | PRAGMA | Четыре: `foreign_keys`, `journal_mode`, `synchronous`, `busy_timeout` |
-| Версия схемы | `2` |
+| Версия схемы | `3` |
+| Экспорт требований и разделов | `req.is_export` / `point.is_export`: `0` — экспорт не выполнялся, `1` — выполнен; сбрасывается в `0` при смысловом изменении |
+| Номерные поля вхождения | `point_content.numbeartefact`, `numbercase`, `numberscenario`, `numberstep`; по умолчанию `NULL` |
 
 ### 0.2. Изменения относительно редакции 2
 
@@ -51,9 +53,20 @@
 | 5 | Поддержка нескольких git-проектов (`SCAN.GIT_PROJECTS`), отдельное зеркало и отдельный `scan_run` на проект | 2, 3, 4, 5, 8, 9, 11, 14, 15, 16 |
 | 6 | Удалены legacy-формат и переходный формат без `-->`; поддерживается только `REQ-META` | 6, 11, 14, 15, 16, прил. A, C |
 | 7 | Одинаковые `(id, point)` в разных проектах и разных файлах — не дубликаты; требование глобально, `UNIQUE(code)`; завершающая точка в `point` игнорируется | 6, 7, 14, 15, 16, прил. B, C |
-| 8 | Схема `scan.db` создаётся с нуля с версией `2`; миграции не поддерживаются | 2, 5, 7.5, 14.1, 15.4, 17 |
+| 8 | Схема `scan.db` создаётся с нуля; миграции не поддерживаются (текущая версия — `3`) | 2, 5, 7.5, 14.1, 15.4, 17 |
 | 9 | Удалён fallback на `GIT_PROJECT`; добавлен `SCAN.MIRROR_FILTER` (partial clone); путь зеркала общий с режимом `analyze` | 1, 3, 5, 14, 17 |
 | 10 | `report-from-db --req`: автономный HTML-отчёт по требованиям и разделам из `scan.db` | 15, 16 |
+
+### 0.3. Изменения редакции 3.2 (04.11.2026)
+
+| № | Что изменено | Затронутые разделы |
+|---|--------------|--------------------|
+| 1 | Добавлены `req.is_export` и `point.is_export`; инвалидация экспорта триггерами при изменении требования, пункта и вхождений | 0.1, 7.2, 7.3, 14.1, 14.5, 15.4 |
+| 2 | В `point_content` добавлены `numbeartefact`, `numbercase`, `numberscenario`, `numberstep` (по умолчанию `NULL`, алгоритм — будущая доработка) | 0.1, 7.2, 7.3, 15.4 |
+| 3 | Версия схемы `scan.db` поднята до `3` (DDL изменился) | 0.1, 2.2, 5, 7.5, 14.1, 15.3, 15.4, 17 |
+| 4 | Устранены противоречия о глобальном `req`: одинаковые `(id, point)` в разных проектах дают **одно** требование | 14.4, 15.3 |
+| 5 | Пояснены счётчики `REQ created` / `REQ updated` в сводке: они учитывают только текущий проход, требование глобально | 11.2 |
+| 6 | Исправлены примеры SQL: связь требования с проектом идёт через вхождения, а не через несуществующий `req.git_project_id` | прил. B |
 
 ---
 
@@ -94,7 +107,7 @@
 - сканирование tags (только ветки);
 - разыменование symlink, загрузка submodules и LFS-объектов;
 - **хранение содержимого файлов** в БД;
-- **миграции схемы** `scan.db` (БД создаётся с нуля, версия схемы `1`);
+- **миграции схемы** `scan.db` (БД создаётся с нуля, версия схемы `3`);
 - редактирование файлов репозитория;
 - автоматическое исправление маркеров;
 - параллельная обработка проектов.
@@ -274,9 +287,9 @@ python -m scan_git_push report-from-db [--config PATH] [--project URL ...] --req
    При `--dry-run`: если БД существует — открыть в режиме чтения и проверить версию схемы; если БД нет — не создавать её.
 
 6. Проверить версию схемы:
-   - БД отсутствует → создать схему (раздел 7) и записать версию `2` (только при обычном запуске);
-   - версия `2` → продолжить работу;
-   - версия отличается от `2` (в том числе `0`, `1` или `> 2`) или схема повреждена → сообщение и код `12`.
+   - БД отсутствует → создать схему (раздел 7) и записать версию `3` (только при обычном запуске);
+   - версия `3` → продолжить работу;
+   - версия отличается от `3` (в том числе `0`, `1`, `2` или `> 3`) или схема повреждена → сообщение и код `12`.
    Миграции не выполняются: БД создаётся с нуля. Если `scan.db` уже существует с другой версией, её нужно удалить вручную.
 
 ### Шаг 1. Формирование списка проектов
@@ -568,6 +581,7 @@ CREATE TABLE IF NOT EXISTS req (
     code            TEXT    NOT NULL UNIQUE,
     name            TEXT    NOT NULL DEFAULT 'Требование без наименования',
     status          INTEGER NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
+    is_export       INTEGER NOT NULL DEFAULT 0 CHECK (is_export IN (0, 1)),
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -577,6 +591,7 @@ CREATE TABLE IF NOT EXISTS point (
     req_id      INTEGER NOT NULL REFERENCES req(id) ON DELETE CASCADE,
     point       TEXT    NOT NULL,
     status      INTEGER NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
+    is_export   INTEGER NOT NULL DEFAULT 0 CHECK (is_export IN (0, 1)),
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (req_id, point)
@@ -605,13 +620,18 @@ CREATE TABLE IF NOT EXISTS file_snapshot (
 );
 
 -- Вхождение маркера. Одинаковые (point_id, file_id) на разных строках допустимы.
+-- Номерные поля заполняются будущей доработкой; по умолчанию NULL.
 CREATE TABLE IF NOT EXISTS point_content (
-    id           INTEGER PRIMARY KEY,
-    point_id     INTEGER NOT NULL REFERENCES point(id) ON DELETE CASCADE,
-    file_id      INTEGER NOT NULL REFERENCES file_snapshot(id) ON DELETE CASCADE,
-    line_no      INTEGER NOT NULL CHECK (line_no > 0),
-    raw_marker   TEXT    NOT NULL,
-    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    id               INTEGER PRIMARY KEY,
+    point_id         INTEGER NOT NULL REFERENCES point(id) ON DELETE CASCADE,
+    file_id          INTEGER NOT NULL REFERENCES file_snapshot(id) ON DELETE CASCADE,
+    line_no          INTEGER NOT NULL CHECK (line_no > 0),
+    raw_marker       TEXT    NOT NULL,
+    numbeartefact    TEXT    DEFAULT NULL,
+    numbercase       TEXT    DEFAULT NULL,
+    numberscenario   TEXT    DEFAULT NULL,
+    numberstep       TEXT    DEFAULT NULL,
+    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (point_id, file_id, line_no)
 );
 
@@ -643,6 +663,50 @@ CREATE INDEX IF NOT EXISTS idx_file_snapshot_project_branch
 
 CREATE INDEX IF NOT EXISTS idx_scan_run_project_started
     ON scan_run(git_project_id, started_at);
+
+-- Инвалидация экспорта: смысловое изменение сбрасывает is_export в 0.
+-- Обновление только is_export (результат экспорта) триггеры не запускает.
+CREATE TRIGGER IF NOT EXISTS trg_req_is_export
+AFTER UPDATE OF code, name, status ON req
+FOR EACH ROW
+WHEN NEW.code IS NOT OLD.code
+  OR NEW.name IS NOT OLD.name
+  OR NEW.status IS NOT OLD.status
+BEGIN
+    UPDATE req SET is_export = 0 WHERE id = NEW.id AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_is_export
+AFTER UPDATE OF point, status ON point
+FOR EACH ROW
+WHEN NEW.point IS NOT OLD.point
+  OR NEW.status IS NOT OLD.status
+BEGIN
+    UPDATE point SET is_export = 0 WHERE id = NEW.id AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_content_insert
+AFTER INSERT ON point_content
+FOR EACH ROW
+BEGIN
+    UPDATE point SET is_export = 0 WHERE id = NEW.point_id AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_content_update
+AFTER UPDATE OF point_id, line_no, raw_marker,
+    numbeartefact, numbercase, numberscenario, numberstep ON point_content
+FOR EACH ROW
+BEGIN
+    UPDATE point SET is_export = 0
+    WHERE id IN (OLD.point_id, NEW.point_id) AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_content_delete
+AFTER DELETE ON point_content
+FOR EACH ROW
+BEGIN
+    UPDATE point SET is_export = 0 WHERE id = OLD.point_id AND is_export = 1;
+END;
 ```
 
 ### 7.3. Назначение таблиц
@@ -650,11 +714,11 @@ CREATE INDEX IF NOT EXISTS idx_scan_run_project_started
 | Таблица | Назначение |
 |---------|------------|
 | `git_project` | Репозитории, с которыми работает режим `scan` |
-| `req` | Глобальные требования (`id` маркера) и их наименования; уникальны по `code` |
-| `point` | Пункты требований (`point`) в разрезе требования |
+| `req` | Глобальные требования (`id` маркера) и их наименования; уникальны по `code`; `is_export` — признак выполненного экспорта |
+| `point` | Пункты требований (`point`) в разрезе требования; `is_export` — признак выполненного экспорта |
 | `file_hash` | Реестр SHA-256 хэшей и размеров; содержимого не содержит |
 | `file_snapshot` | Текущее состояние файла в ветке проекта |
-| `point_content` | Вхождение маркера: пункт + файл + строка + исходный текст |
+| `point_content` | Вхождение маркера: пункт + файл + строка + исходный текст; номерные поля (`numbeartefact`, `numbercase`, `numberscenario`, `numberstep`) |
 | `scan_run` | Аудит запусков и статистика по каждому проекту |
 | `schema_version` | Версия схемы (контроль совместимости) |
 
@@ -673,15 +737,38 @@ CREATE INDEX IF NOT EXISTS idx_scan_run_project_started
 | Одинаковые `(id, point)` в одном файле на разных строках | Одно требование и один пункт; несколько вхождений |
 | Полностью идентичная строка `(point_id, file_id, line_no)` | Невозможна: строка одна, защищено `UNIQUE` |
 
+### 7.4.1. Признак экспорта и номерные поля
+
+`req.is_export` и `point.is_export` — целые `0/1`, по умолчанию `0`:
+
+| Значение | Трактовка |
+|----------|-----------|
+| `0` | Экспорт не выполнялся (или данные изменились после экспорта) |
+| `1` | Экспорт выполнен |
+
+Правила инвалидации (реализованы триггерами раздела 7.2):
+
+| Событие | Сбрасывается |
+|---------|--------------|
+| Новое требование | `req.is_export = 0` (значение по умолчанию) |
+| Изменение `req.code`, `req.name`, `req.status` | `req.is_export = 0` |
+| Новый пункт | `point.is_export = 0` (значение по умолчанию) |
+| Изменение `point.point` или `point.status` | `point.is_export = 0` |
+| Вставка, изменение или удаление `point_content`, связанного с пунктом | `point.is_export = 0` |
+
+Триггеры срабатывают только при реальном изменении (`NEW.x IS NOT OLD.x`), поэтому повторное сканирование без изменений сохраняет `is_export = 1`. Обновление только самого `is_export` (результат будущего экспорта) флаг не сбрасывает.
+
+Номерные поля `point_content` — `numbeartefact` («Номер артефакта»), `numbercase` («Номер тест-кейса»), `numberscenario` («Номер сценария»), `numberstep` («Номер шага сценария») — текстовые, по умолчанию `NULL`. Алгоритм их заполнения и экспорт — будущая доработка; текущий `scan` значения не изменяет.
+
 ### 7.5. Версия схемы
 
-- Текущая версия схемы: `2`.
+- Текущая версия схемы: `3`.
 - БД `db/scan.db` создаётся с нуля; миграции не предусмотрены.
 - При старте:
-  - файла БД нет → создать схему (раздел 7.2) и вставить `schema_version = 2`;
-  - файл есть, версия `2`, таблицы на месте → продолжить работу;
+  - файла БД нет → создать схему (раздел 7.2) и вставить `schema_version = 3`;
+  - файл есть, версия `3`, таблицы на месте → продолжить работу;
   - файл есть, но таблица `schema_version` отсутствует или пуста → код `12`;
-  - версия `≠ 2` (в том числе `0`, `1` или `> 2`) → код `12`;
+  - версия `≠ 3` (в том числе `0`, `1`, `2` или `> 3`) → код `12`;
   - ошибка чтения схемы → код `12`.
 - `schema_version` используется только как защита от запуска на несовместимой БД. Её наличие позволяет в будущем добавить миграции без изменения текущей логики.
 - Сброс БД: остановить процесс, удалить `db/scan.db` (и файлы `-wal` / `-shm`) и запустить сканирование заново. Автоматического удаления БД нет.
@@ -867,8 +954,8 @@ Branches:       main
 Files scanned:  310
 Files skipped:  2
 Markers found:  58
-REQ created:    12
-REQ updated:    1
+REQ created:    0
+REQ updated:    13
 POINT created:  44
 POINT archived: 0
 Errors:         0
@@ -885,6 +972,8 @@ Exit code:      0
 ```
 
 `markers_found` — количество валидных вхождений; невалидные маркеры и ошибки чтения учитываются в `errors`/`errors_count`.
+
+`REQ created` / `REQ updated` — счётчики **текущего прохода по проекту**, а не размер глобального справочника. Требование глобально (`UNIQUE(code)`): если `id` уже встречался в другом проекте в этом же запуске или в предыдущем запуске, новый `req` не создаётся. Поэтому `REQ created: 0` у второго проекта — нормальная ситуация, а не ошибка. Общее число требований в БД — `SELECT COUNT(*) FROM req` (сумма по проектам не равна ему).
 
 ### 11.3. Логирование
 
@@ -1021,13 +1110,15 @@ Exit code:      0
 
 ### 14.1. База данных
 
-- [ ] При отсутствии `db/scan.db` создаётся файл со всеми таблицами, FK, индексами и `schema_version = 2`.
-- [ ] При версии схемы `≠ 2` или повреждённой схеме — сообщение и код `12`.
+- [ ] При отсутствии `db/scan.db` создаётся файл со всеми таблицами, FK, индексами, триггерами инвалидации экспорта и `schema_version = 3`.
+- [ ] При версии схемы `≠ 3` или повреждённой схеме — сообщение и код `12`.
 - [ ] Включены четыре PRAGMA: `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = NORMAL`, `busy_timeout = 5000`.
 - [ ] Каскадные удаления работают: удаление `git_project` удаляет его `point_content`, `file_snapshot`, `scan_run`; глобальные `req`/`point` архивируются через `status`.
 - [ ] `status` хранится как `0/1`, значения вне диапазона отклоняются.
+- [ ] `is_export` хранится как `0/1`, по умолчанию `0`; значения вне диапазона отклоняются.
 - [ ] В таблице `file_hash` нет колонки содержимого; в БД отсутствуют байты файлов.
 - [ ] `req` имеет `UNIQUE(code)`; одинаковые `code` в разных проектах — одно требование.
+- [ ] `point_content.numbeartefact`, `numbercase`, `numberscenario`, `numberstep` допускают `NULL` и по умолчанию `NULL`.
 - [ ] Повторный запуск не создаёт дубликатов `req`, `point`, `point_content`, `file_snapshot`, `file_hash`.
 
 ### 14.2. Маркеры
@@ -1058,7 +1149,7 @@ Exit code:      0
 - [ ] `SCAN.GIT_PROJECTS` с двумя и более значениями обрабатывается последовательно в заданном порядке.
 - [ ] Для каждого проекта создаётся отдельное зеркало в `SCAN.MIRROR_DIR`.
 - [ ] Для каждого проекта создаётся отдельная запись `scan_run`.
-- [ ] Одинаковые `(id, point)` в разных проектах дают два независимых `req` и не смешиваются.
+- [ ] Одинаковые `(id, point)` в разных проектах дают **одно глобальное** `req` и один `point`; вхождения остаются раздельными по проектам.
 - [ ] Ошибка доступа к одному проекту не прерывает обработку остальных; код `11`.
 - [ ] Если недоступны все проекты — код `5`.
 - [ ] `--project` заменяет список проектов и может указываться несколько раз.
@@ -1067,6 +1158,9 @@ Exit code:      0
 ### 14.5. Идемпотентность и reconciliation
 
 - [ ] Повторный запуск без изменений не меняет `req`, `point`, `point_content`, `file_hash`.
+- [ ] Повторный запуск без изменений сохраняет `req.is_export` и `point.is_export` равными `1`.
+- [ ] Изменение `req.code/name/status` сбрасывает `req.is_export` в `0`.
+- [ ] Изменение `point.point/status`, вставка, изменение или удаление `point_content` сбрасывает `point.is_export` в `0`.
 - [ ] При удалении маркера `point.status` становится `0`; при исчезновении всех пунктов `req.status = 0`.
 - [ ] При повторном появлении маркера `status` возвращается в `1`.
 - [ ] При `SCAN.BRANCHES=all` удалённые ветки удаляются из `file_snapshot` своего проекта.
@@ -1141,9 +1235,11 @@ Exit code:      0
 
 Проверить:
 
-- создание схемы версии `2`;
+- создание схемы версии `3`;
 - заполнение таблиц;
-- раздельные `req` для одинаковых `id` в разных проектах;
+- одно глобальное `req` (и один `point`) для одинаковых `id` в разных проектах; вхождения при этом раздельные;
+- сброс `is_export` при изменении требования/пункта/вхождений и сохранение флага при повторном запуске без изменений;
+- `NULL` в номерных полях `point_content` по умолчанию;
 - два независимых зеркала;
 - повторный запуск;
 - reconciliation по каждому проекту;
@@ -1160,8 +1256,12 @@ Exit code:      0
 - одинаковые `code` в разных проектах вставляются как одно глобальное требование;
 - одинаковые `(point_id, file_id)` на разных строках вставляются успешно;
 - `status` CHECK;
-- создание схемы с нуля и `schema_version = 2`;
-- версия схемы `0`, `1` и отсутствие строки в `schema_version` — код `12`;
+- создание схемы с нуля и `schema_version = 3`;
+- версия схемы `0`, `1`, `2` и отсутствие строки в `schema_version` — код `12`;
+- инвалидация `is_export` триггерами: изменение `req`/`point`, вставка/изменение/удаление `point_content`;
+- повторный запуск без изменений сохраняет `is_export = 1`;
+- обновление только `is_export = 1` не сбрасывает флаг;
+- номерные поля `point_content` по умолчанию `NULL`;
 - повреждённый файл БД — код `12`;
 - повторное открытие созданной БД не требует миграций.
 
@@ -1201,7 +1301,7 @@ Exit code:      0
 | Секреты | `scan` не требует LLM-токенов; `GITHUB_TOKEN` не обязателен для публичных репозиториев, для приватных используется git credential helper / `GIT_ASKPASS` |
 | `config.json` | Дополняется вложенным объектом `SCAN`; плоские ключи `SCAN_*` не используются |
 | `pyproject.toml` | Новых обязательных зависимостей нет; используется `git` CLI и stdlib `sqlite3` |
-| Версия схемы `scan.db` | `2`; БД создаётся с нуля, миграции не предусмотрены (раздел 7.5) |
+| Версия схемы `scan.db` | `3`; БД создаётся с нуля, миграции не предусмотрены (раздел 7.5) |
 
 ---
 
@@ -1245,7 +1345,9 @@ Exit code:      0
 SELECT gp.url, r.code, r.name, p.point
 FROM req r
 JOIN point p ON p.req_id = r.id
-JOIN git_project gp ON gp.id = r.git_project_id
+JOIN point_content pc ON pc.point_id = p.id
+JOIN file_snapshot fs ON fs.id = pc.file_id
+JOIN git_project gp ON gp.id = fs.git_project_id
 WHERE r.status = 1 AND p.status = 1
 ORDER BY gp.url, r.code, p.point;
 ```
@@ -1264,8 +1366,8 @@ SELECT
 FROM point_content pc
 JOIN point p ON p.id = pc.point_id
 JOIN req r ON r.id = p.req_id
-JOIN git_project gp ON gp.id = r.git_project_id
 JOIN file_snapshot fs ON fs.id = pc.file_id
+JOIN git_project gp ON gp.id = fs.git_project_id
 ORDER BY gp.url, r.code, p.point, fs.branch, fs.path, pc.line_no;
 ```
 
@@ -1282,9 +1384,12 @@ ORDER BY gp.url, fs.branch, fs.path;
 ### B.4. Одинаковые требования в разных проектах
 
 ```sql
-SELECT r.code, gp.url, r.name
+SELECT DISTINCT r.code, gp.url, r.name
 FROM req r
-JOIN git_project gp ON gp.id = r.git_project_id
+JOIN point p ON p.req_id = r.id
+JOIN point_content pc ON pc.point_id = p.id
+JOIN file_snapshot fs ON fs.id = pc.file_id
+JOIN git_project gp ON gp.id = fs.git_project_id
 WHERE r.code = ?
 ORDER BY gp.url;
 ```

@@ -139,6 +139,7 @@ class DatabaseManager:
                         f"(expected {SCHEMA_VERSION})"
                     )
                 conn.executescript(SCHEMA_SQL)
+                self._normalize_commit_dates(conn)
                 return
 
             if "analyzed_commits" not in tables:
@@ -147,6 +148,37 @@ class DatabaseManager:
                 )
 
         self._migrate_legacy()
+        with self.connect() as conn:
+            self._normalize_commit_dates(conn)
+
+    def _normalize_commit_dates(self, conn: sqlite3.Connection) -> int:
+        """Rewrite legacy offset timestamps to UTC (idempotent data fix).
+
+        Older releases stored ``%cI`` values with the committer's local offset.
+        Mixed offsets break lexicographic comparisons against UTC cut-offs and
+        ``ORDER BY commit_date``, so existing rows are converted once.
+        """
+        rows = conn.execute(
+            "SELECT id, commit_date, author_date FROM analyzed_commits "
+            "WHERE (commit_date IS NOT NULL AND commit_date NOT LIKE '%+00:00' "
+            "AND commit_date NOT LIKE '%Z') "
+            "OR (author_date IS NOT NULL AND author_date NOT LIKE '%+00:00' "
+            "AND author_date NOT LIKE '%Z')"
+        ).fetchall()
+        updated = 0
+        for row in rows:
+            commit_date = _normalize_iso_text(row["commit_date"])
+            author_date = _normalize_iso_text(row["author_date"])
+            if commit_date == row["commit_date"] and author_date == row["author_date"]:
+                continue
+            conn.execute(
+                "UPDATE analyzed_commits SET commit_date = ?, author_date = ? WHERE id = ?",
+                (commit_date, author_date, row["id"]),
+            )
+            updated += 1
+        if updated:
+            logger.info("Normalized {} commit date(s) to UTC", updated)
+        return updated
 
     def _migrate_legacy(self) -> None:
         """One-time migration from the 0.1 schema (``repo_url`` key)."""
@@ -328,8 +360,8 @@ class DatabaseManager:
                 (
                     project_id,
                     commit.sha,
-                    commit.date.isoformat(),
-                    commit.author_date.isoformat() if commit.author_date else None,
+                    _to_utc_iso(commit.date),
+                    _to_utc_iso(commit.author_date) if commit.author_date else None,
                     analyzed_at.isoformat(),
                     status,
                     summary,
@@ -442,6 +474,26 @@ class DatabaseManager:
 def _table_names(conn: sqlite3.Connection) -> set[str]:
     rows = conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
     return {row[0] for row in rows}
+
+
+def _to_utc_iso(value: datetime) -> str:
+    """Serialize a datetime in UTC, regardless of its original offset."""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _normalize_iso_text(value: str | None) -> str | None:
+    """Convert an ISO 8601 string with an offset to the equivalent UTC string."""
+    if not value:
+        return value
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
 
 
 def _read_version(conn: sqlite3.Connection) -> int:

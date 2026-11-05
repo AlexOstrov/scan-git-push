@@ -3,6 +3,17 @@
 - [2026-10-19 20:48] Analyzed 25 commits from fullstack-demo using ollama/gemma4:12b
 - [2026-10-21 21:12] Analyzed 3 commits from fullstack-demo using mistral/ministral-8b-latest
 
+## 2026-11-04 — обратная связь: экспорт, номерные поля, UTC-даты
+
+- `scan.db` → версия `3`: у `req` и `point` добавлен `is_export` (`0` — экспорт не выполнялся, `1` — выполнен); в `point_content` добавлены `numbeartefact`, `numbercase`, `numberscenario`, `numberstep` (`TEXT DEFAULT NULL`).
+- Инвалидация `is_export` — пять SQLite-триггеров: изменение `req.code/name/status`, `point.point/status`, вставка/изменение/удаление `point_content`. Повторный скан без изменений и обновление только `is_export` флаг не сбрасывают.
+- `replace_occurrences` переведён на diff, чтобы неизменённые маркеры сохраняли номерные поля и признак экспорта.
+- `commit_date`/`author_date` нормализуются в UTC при разборе (`rev._parse_date`), записи (`_to_utc_iso`) и при `initialize()` для существующих строк; схема `analysis.db` не менялась.
+- Устранены противоречия `dop_tz01.md`: глобальное `req` в §14.4/§15.3, версия схемы в §2.2, пояснение счётчиков в §11.2, SQL в прил. B; редакция 3.2 от 04.11.2026.
+- `scan-git-push-TZ.md`: чек-лист `scan` отмечен выполненным.
+- README, `user-guide.html`, память проекта обновлены; тесты — `228 passed`.
+- Реальная проверка: `db/scan.db` v2 сохранена как `.v2.bak` и пересоздана в v3 (4 проекта, 6 требований, 7 пунктов, 9 вхождений); флаги `is_export` выжили повторный `scan`, затем возвращены в `0`; `report-from-db --req` — 6/7; 7 дат `analysis.db` нормализованы из `+03:00` в `+00:00`.
+
 ## 2026-11-03 — обратная связь по эксплуатации
 
 - `point` с завершающей точкой нормализуется: `5.5.1.` → `5.5.1`; `point="."` отклоняется. `SCAN_PARSER_VERSION` → `2` (принудительный переразбор).

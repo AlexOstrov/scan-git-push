@@ -375,6 +375,8 @@ python -m scan_git_push --scan --json   # устаревший алиас</code>
 <pre><code>&lt;!-- REQ-META id="REQ_1" point="1.1" name="Название требования" --&gt;</code></pre>
 <ul style="padding-left:20px;">
   <li>Требования (<code>id</code>) глобальны: одинаковые <code>id</code> и <code>point</code> в разных проектах — это одно требование и один раздел.</li>
+  <li><code>req.is_export</code> / <code>point.is_export</code>: <code>0</code> — экспорт не выполнялся, <code>1</code> — выполнен. Флаг сбрасывается в <code>0</code> при изменении требования, пункта или связанных вхождений и сохраняется при повторном сканировании без изменений.</li>
+  <li>В <code>point_content</code> зарезервированы поля <code>numbeartefact</code>, <code>numbercase</code>, <code>numberscenario</code>, <code>numberstep</code> (по умолчанию <code>NULL</code>); их заполнение и экспорт — будущая доработка.</li>
   <li>Завершающая точка в <code>point</code> игнорируется: <code>point="5.5.1."</code> и <code>point="5.5.1"</code> идентичны.</li>
   <li>Старые форматы (<code>ID_REQ</code>, <code>ID_EXAMPLE</code>, маркер без <code>--&gt;</code>) не разбираются и дают предупреждение <code>[WARN] legacy marker format</code>.</li>
   <li>По умолчанию сканируются только <code>*.txt</code> и <code>*.md</code>; <code>SCAN.EXCLUDE</code> имеет приоритет над include.</li>
@@ -401,7 +403,7 @@ python -m scan_git_push --scan --json   # устаревший алиас</code>
 <h3>Базы данных</h3>
 <ul style="padding-left:20px;">
   <li><code>db/analysis.db</code> — проанализированные коммиты и файлы (схема v1).</li>
-  <li><code>db/scan.db</code> — проекты, ветки, снимки файлов, глобальные требования, пункты и вхождения маркеров (схема v2).</li>
+  <li><code>db/scan.db</code> — проекты, ветки, снимки файлов, глобальные требования, пункты и вхождения маркеров; признаки экспорта и номерные поля (схема v3).</li>
   <li><code>db/repos/</code> — bare-зеркала проектов; <code>logs/</code> — журналы запусков.</li>
 </ul>
 
@@ -510,7 +512,7 @@ MISTRAL_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
 </div>
 
 <div class="footer">
-  scan-git-push v0.2.0 · LLM-powered git commit analysis · Обновлено 2026-11-02
+  scan-git-push v0.2.0 · LLM-powered git commit analysis · Обновлено 2026-11-04
 </div>
 
 </div>

@@ -1,4 +1,4 @@
-"""SQLite storage for the ``scan`` mode (``scan.db``, schema version 2).
+"""SQLite storage for the ``scan`` mode (``scan.db``, schema version 3).
 
 The schema is created from scratch; migrations are intentionally not supported
 (``dop_tz01.md``, section 7.5). The database never stores file contents.
@@ -18,7 +18,7 @@ from loguru import logger
 
 from scan_git_push.git.url import is_local_path, normalize_url, url_key
 
-SCAN_SCHEMA_VERSION = 2
+SCAN_SCHEMA_VERSION = 3
 RUNNING_RUN_TTL = timedelta(hours=24)
 
 SCAN_SCHEMA_SQL = """
@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS req (
     code            TEXT    NOT NULL UNIQUE,
     name            TEXT    NOT NULL DEFAULT 'Требование без наименования',
     status          INTEGER NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
+    is_export       INTEGER NOT NULL DEFAULT 0 CHECK (is_export IN (0, 1)),
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS point (
     req_id      INTEGER NOT NULL REFERENCES req(id) ON DELETE CASCADE,
     point       TEXT    NOT NULL,
     status      INTEGER NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
+    is_export   INTEGER NOT NULL DEFAULT 0 CHECK (is_export IN (0, 1)),
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     updated_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (req_id, point)
@@ -78,12 +80,16 @@ CREATE TABLE IF NOT EXISTS file_snapshot (
 );
 
 CREATE TABLE IF NOT EXISTS point_content (
-    id           INTEGER PRIMARY KEY,
-    point_id     INTEGER NOT NULL REFERENCES point(id) ON DELETE CASCADE,
-    file_id      INTEGER NOT NULL REFERENCES file_snapshot(id) ON DELETE CASCADE,
-    line_no      INTEGER NOT NULL CHECK (line_no > 0),
-    raw_marker   TEXT    NOT NULL,
-    created_at   TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    id               INTEGER PRIMARY KEY,
+    point_id         INTEGER NOT NULL REFERENCES point(id) ON DELETE CASCADE,
+    file_id          INTEGER NOT NULL REFERENCES file_snapshot(id) ON DELETE CASCADE,
+    line_no          INTEGER NOT NULL CHECK (line_no > 0),
+    raw_marker       TEXT    NOT NULL,
+    numbeartefact    TEXT    DEFAULT NULL,
+    numbercase       TEXT    DEFAULT NULL,
+    numberscenario   TEXT    DEFAULT NULL,
+    numberstep       TEXT    DEFAULT NULL,
+    created_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     UNIQUE (point_id, file_id, line_no)
 );
 
@@ -115,6 +121,49 @@ CREATE INDEX IF NOT EXISTS idx_file_snapshot_project_branch
 
 CREATE INDEX IF NOT EXISTS idx_scan_run_project_started
     ON scan_run(git_project_id, started_at);
+
+-- Инвалидация экспорта: любое смысловое изменение сбрасывает is_export.
+CREATE TRIGGER IF NOT EXISTS trg_req_is_export
+AFTER UPDATE OF code, name, status ON req
+FOR EACH ROW
+WHEN NEW.code IS NOT OLD.code
+  OR NEW.name IS NOT OLD.name
+  OR NEW.status IS NOT OLD.status
+BEGIN
+    UPDATE req SET is_export = 0 WHERE id = NEW.id AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_is_export
+AFTER UPDATE OF point, status ON point
+FOR EACH ROW
+WHEN NEW.point IS NOT OLD.point
+  OR NEW.status IS NOT OLD.status
+BEGIN
+    UPDATE point SET is_export = 0 WHERE id = NEW.id AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_content_insert
+AFTER INSERT ON point_content
+FOR EACH ROW
+BEGIN
+    UPDATE point SET is_export = 0 WHERE id = NEW.point_id AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_content_update
+AFTER UPDATE OF point_id, line_no, raw_marker,
+    numbeartefact, numbercase, numberscenario, numberstep ON point_content
+FOR EACH ROW
+BEGIN
+    UPDATE point SET is_export = 0
+    WHERE id IN (OLD.point_id, NEW.point_id) AND is_export = 1;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_point_content_delete
+AFTER DELETE ON point_content
+FOR EACH ROW
+BEGIN
+    UPDATE point SET is_export = 0 WHERE id = OLD.point_id AND is_export = 1;
+END;
 """
 
 _REQUIRED_TABLES = {
@@ -155,7 +204,7 @@ def author_from_url(value: str, base_dir: Path | None = None) -> str | None:
 
 
 class ScanDatabase:
-    """Manages ``scan.db`` (schema version 2)."""
+    """Manages ``scan.db`` (schema version 3)."""
 
     def __init__(self, db_path: Path | str) -> None:
         path = Path(db_path)
@@ -554,21 +603,45 @@ class ScanDatabase:
         file_id: int,
         occurrences: Iterable[tuple[int, int, str]],
     ) -> int:
-        """Replace all marker occurrences of a file and return the inserted count."""
-        conn.execute("DELETE FROM point_content WHERE file_id = ?", (file_id,))
-        inserted = 0
-        seen: set[tuple[int, int]] = set()
+        """Synchronize the marker occurrences of a file.
+
+        Only real changes are written (inserts, marker updates, deletions), so
+        re-parsing a file whose markers did not change keeps the number fields
+        and does not reset ``point.is_export`` (schema triggers handle the reset
+        on actual changes). Returns the number of newly inserted rows.
+        """
+        desired: dict[tuple[int, int], str] = {}
         for point_id, line_no, raw_marker in occurrences:
-            key = (point_id, line_no)
-            if key in seen:
-                continue
-            seen.add(key)
-            conn.execute(
-                "INSERT OR IGNORE INTO point_content "
-                "(point_id, file_id, line_no, raw_marker) VALUES (?, ?, ?, ?)",
-                (point_id, file_id, line_no, raw_marker),
-            )
-            inserted += 1
+            desired.setdefault((point_id, line_no), raw_marker)
+
+        existing = {
+            (row["point_id"], row["line_no"]): row
+            for row in conn.execute(
+                "SELECT id, point_id, line_no, raw_marker "
+                "FROM point_content WHERE file_id = ?",
+                (file_id,),
+            ).fetchall()
+        }
+
+        for key, row in existing.items():
+            if key not in desired:
+                conn.execute("DELETE FROM point_content WHERE id = ?", (row["id"],))
+
+        inserted = 0
+        for (point_id, line_no), raw_marker in desired.items():
+            row = existing.get((point_id, line_no))
+            if row is None:
+                conn.execute(
+                    "INSERT INTO point_content "
+                    "(point_id, file_id, line_no, raw_marker) VALUES (?, ?, ?, ?)",
+                    (point_id, file_id, line_no, raw_marker),
+                )
+                inserted += 1
+            elif row["raw_marker"] != raw_marker:
+                conn.execute(
+                    "UPDATE point_content SET raw_marker = ? WHERE id = ?",
+                    (raw_marker, row["id"]),
+                )
         return inserted
 
     # --------------------------------------------------------- reconciliation

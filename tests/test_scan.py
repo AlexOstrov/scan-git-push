@@ -212,7 +212,7 @@ class TestSchemaAndInitialScan:
         assert project.io_errors == 0
 
         db = ScanDatabase(Settings.from_file(config).scan_db_path)
-        assert db.schema_version() == 2
+        assert db.schema_version() == 3
         occurrences = db.occurrences(project.project)
         points = {(item["code"], item["point"]) for item in occurrences}
         assert ("REQ_1", "1.1") in points

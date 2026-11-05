@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+from datetime import timezone
 from pathlib import Path
 
 import pytest
 
 from scan_git_push.git.mirror import MirrorManager
 from scan_git_push.git.rev import (
+    _parse_date,
     list_commits,
     numstat,
     read_patches,
@@ -61,6 +63,21 @@ class TestUrlNormalization:
         assert is_local_path("./repo")
         assert not is_local_path("https://github.com/o/r")
         assert not is_local_path("git@github.com:o/r.git")
+
+
+class TestDateParsing:
+    def test_offset_is_normalized_to_utc(self) -> None:
+        parsed = _parse_date("2026-11-01T14:11:42+03:00")
+        assert parsed.isoformat() == "2026-11-01T11:11:42+00:00"
+        assert parsed.utcoffset() == timezone.utc.utcoffset(parsed)
+
+    def test_naive_value_is_assumed_utc(self) -> None:
+        assert _parse_date("2026-11-01T11:00:00").isoformat() == (
+            "2026-11-01T11:00:00+00:00"
+        )
+
+    def test_invalid_value_falls_back_to_now(self) -> None:
+        assert _parse_date("not-a-date").tzinfo is not None
 
 
 class TestMirrorManager:

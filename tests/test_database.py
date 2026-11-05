@@ -182,6 +182,96 @@ class TestCommitStorage:
             assert conn.execute("SELECT COUNT(*) FROM commit_files").fetchone()[0] == 0
 
 
+class TestDateNormalization:
+    """Commit dates are stored in UTC so string comparison and ORDER BY work."""
+
+    def test_save_stores_utc(self, temp_db: DatabaseManager) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        commit = CommitData(
+            sha="offset",
+            author="a",
+            date=datetime(
+                2026, 11, 1, 14, 0, tzinfo=timezone(timedelta(hours=3))
+            ),
+            message="m",
+        )
+        _save(temp_db, project_id, commit)
+        with temp_db.connect() as conn:
+            stored = conn.execute(
+                "SELECT commit_date FROM analyzed_commits WHERE sha = 'offset'"
+            ).fetchone()[0]
+        assert stored == "2026-11-01T11:00:00+00:00"
+
+    def test_naive_date_is_treated_as_utc(self, temp_db: DatabaseManager) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        _save(
+            temp_db,
+            project_id,
+            CommitData(
+                sha="naive",
+                author="a",
+                date=datetime(2026, 11, 1, 11, 0),
+                message="m",
+            ),
+        )
+        with temp_db.connect() as conn:
+            stored = conn.execute(
+                "SELECT commit_date FROM analyzed_commits WHERE sha = 'naive'"
+            ).fetchone()[0]
+        assert stored == "2026-11-01T11:00:00+00:00"
+
+    def test_order_across_offsets(self, temp_db: DatabaseManager) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        # 18:00-05:00 == 23:00 UTC (newer); 23:00+03:00 == 20:00 UTC (older).
+        newer = CommitData(
+            sha="newer",
+            author="a",
+            date=datetime(2026, 11, 1, 18, 0, tzinfo=timezone(timedelta(hours=-5))),
+            message="n",
+        )
+        older = CommitData(
+            sha="older",
+            author="a",
+            date=datetime(2026, 11, 1, 23, 0, tzinfo=timezone(timedelta(hours=3))),
+            message="o",
+        )
+        _save(temp_db, project_id, older)
+        _save(temp_db, project_id, newer)
+        rows = temp_db.get_analyses([project_id], days=3650)
+        assert [row["sha"] for row in rows] == ["newer", "older"]
+
+    def test_initialize_normalizes_existing_offsets(
+        self, temp_db: DatabaseManager
+    ) -> None:
+        project_id = temp_db.ensure_project("https://github.com/o/r")
+        _save(
+            temp_db,
+            project_id,
+            CommitData(
+                sha="legacy",
+                author="a",
+                date=datetime(2026, 11, 1, 12, 0, tzinfo=timezone.utc),
+                message="m",
+            ),
+        )
+        with temp_db.connect() as conn:
+            conn.execute(
+                "UPDATE analyzed_commits SET commit_date = ?, author_date = ? "
+                "WHERE sha = 'legacy'",
+                ("2026-11-01T15:00:00+03:00", "2026-11-01T15:00:00+03:00"),
+            )
+
+        DatabaseManager(temp_db.db_path).initialize()
+
+        with temp_db.connect() as conn:
+            row = conn.execute(
+                "SELECT commit_date, author_date FROM analyzed_commits "
+                "WHERE sha = 'legacy'"
+            ).fetchone()
+        assert row["commit_date"] == "2026-11-01T12:00:00+00:00"
+        assert row["author_date"] == "2026-11-01T12:00:00+00:00"
+
+
 class TestLegacyMigration:
     def _create_legacy(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

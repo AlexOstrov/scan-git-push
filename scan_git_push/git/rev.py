@@ -145,7 +145,9 @@ def _parse_date(value: str) -> datetime:
         return datetime.now(timezone.utc)
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+    # Git emits ISO 8601 with the committer's local offset; normalize to UTC so
+    # stored values and period comparisons are unambiguous and sortable.
+    return parsed.astimezone(timezone.utc)
 
 
 # ------------------------------------------------------------------- numstat
