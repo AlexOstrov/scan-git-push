@@ -131,7 +131,7 @@ class ModelRegistry:
             return OllamaProvider(
                 model=option.model,
                 base_url=self.llm.ollama_base_url,
-                http_timeout=self.llm.http_timeout,
+                http_timeout=self.llm.ollama_http_timeout,
                 max_retries=retries,
                 backoff_factor=backoff,
             )

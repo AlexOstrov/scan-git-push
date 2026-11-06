@@ -21,5 +21,6 @@
 - Консоль, Markdown, автономный интерактивный HTML, сводный отчёт.
 - Выбор модели: интерактивно, `--model`, `--non-interactive`, кэш моделей.
 - `--json` для автоматизации.
-- Retry с exponential backoff; коды выхода `0/1/2/3/4/5/8/9/11/12`.
+- Retry с exponential backoff; коды выхода `0/1/2/3/4/5/8/9/10/11/12`.
+- Раздельные таймауты LLM: `OLLAMA_HTTP_TIMEOUT` (180 с) и `HTTP_TIMEOUT` (30 с, Mistral); `ANALYSIS.CONCURRENCY` удалён как неиспользуемый.
 - Артефактная память `docs/memory/`.

@@ -3,6 +3,17 @@
 - [2026-10-19 20:48] Analyzed 25 commits from fullstack-demo using ollama/gemma4:12b
 - [2026-10-21 21:12] Analyzed 3 commits from fullstack-demo using mistral/ministral-8b-latest
 
+## 2026-11-05 — точность отчётов, конфига и документации
+
+- Имена проектных отчётов: `{repo}-{sha256(url_key)[:6]}_{YYYYMMDD}.{md,html}` — одноимённые проекты больше не перезаписывают файлы; суффикс всегда детерминирован.
+- Удалён неиспользуемый `ANALYSIS.CONCURRENCY` из `config.py`, примеров конфига и документации.
+- Добавлен `LLM.OLLAMA_HTTP_TIMEOUT` (по умолчанию 180 с, 5–600); `LLM.HTTP_TIMEOUT` (30 с, 5–120) остаётся для Mistral.
+- `scan-git-push-TZ.md`: полный DDL `analysis.db` вынесен в приложение A (включая `author_date`, `email`, `idx_commits_analyzed_at`); уточнены приоритет кодов (`12 → 9 → 2/5 → 11 → 0`, auth при частичном успехе — `11`), таймауты и ретенция по `commit_date` (неполный отчёт при `--days > DB_RETENTION_DAYS`, код `0`).
+- `dop_tz01.md`: в JSON добавлены `totals.files_skipped` и `dry_run`; для `--req` задокументированы коды `9` (нет `scan.db`) и `12` (несовместимая схема); `analiz_optimizacii_TZ.md` — статус «исполнено; нормативно — ТЗ v2».
+- `FEATURES.md`: в списке кодов выхода добавлен `10`.
+- `analyze`: ошибки проектов санитизируются `redact_credentials()` перед записью в JSON и консоль, как в режиме `scan`.
+- Тесты: `230 passed` (добавлены проверки коллизии имён и раздельных таймаутов).
+
 ## 2026-11-04 — обратная связь: экспорт, номерные поля, UTC-даты
 
 - `scan.db` → версия `3`: у `req` и `point` добавлен `is_export` (`0` — экспорт не выполнялся, `1` — выполнен); в `point_content` добавлены `numbeartefact`, `numbercase`, `numberscenario`, `numberstep` (`TEXT DEFAULT NULL`).

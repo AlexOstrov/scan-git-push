@@ -1,7 +1,7 @@
 # Текущее состояние проекта
 
 ## Текущая задача
-Доработка по обратной связи эксплуатации (2026-11-04) завершена: добавлены `req.is_export` / `point.is_export` с триггерной инвалидацией, номерные поля `point_content` (`numbeartefact`, `numbercase`, `numberscenario`, `numberstep`), схема `scan.db` поднята до `3`; устранены противоречия `dop_tz01.md` (ред. 3.2) и актуализирован чек-лист основного ТЗ. `commit_date`/`author_date` нормализуются в UTC при разборе, записи и при открытии существующей `analysis.db`. Полный набор тестов — см. ниже; реальный прогон и отчёт проверены. Не закрыт только пункт производительности на репозитории > 10 000 коммитов.
+Доработка по замечаниям 2026-11-05 завершена: имена отчётов получили суффикс `sha256(url_key)[:6]` (коллизия одноимённых проектов устранена), удалён неиспользуемый `ANALYSIS.CONCURRENCY`, добавлен отдельный `LLM.OLLAMA_HTTP_TIMEOUT` (180 с), в ТЗ внесён полный DDL `analysis.db` (приложение A), уточнены статус `analiz_optimizacii_TZ.md`, приоритет кодов выхода, JSON `scan` (`files_skipped`, `dry_run`), поведение `--req` без `scan.db` и ретенция по `commit_date`; ошибки `analyze` санитизируются через `redact_credentials()`. Тесты — `230 passed`. Не закрыт только пункт производительности на репозитории > 10 000 коммитов.
 
 ## Реализованы
 - Вложенная конфигурация `SCAN` / `ANALYSIS` / `LLM` (`config.py`), `extra="forbid"`, deprecated-апгрейд плоского конфига.
@@ -14,7 +14,7 @@
 - `ANALYSIS.EXCLUDE` по умолчанию: lock-файлы, `*.min.js/css`, `*.map`, `dist/`, `build/`, `vendor/`, `node_modules/`, `.git/`.
 - LLM: только `ollama` и `mistral`; `llm/registry.py` (discover, cache, resolve/build), `--model`, `--non-interactive`, `--reanalyze`.
 - CLI: `main`/`analyze`/`report-from-db`/`scan`, `--project`, `--days`, `--json`, коды `0/1/2/3/4/5/8/9/10/11/12`.
-- Мультипроектные отчёты: на проект + `_summary_{date}` (MD/HTML), автономный HTML, autoescape.
+- Мультипроектные отчёты: на проект + `_summary_{date}` (MD/HTML), автономный HTML, autoescape. Имя проектного отчёта — `{repo}-{sha256(url_key)[:6]}_{date}`, поэтому одноимённые проекты не перезаписывают файлы.
 - `report-from-db --req`: автономный HTML «Отчет по требованиям и разделам» из `scan.db` (требование → раздел → вхождения), `--project` и `--json`; `analysis.db` и LLM не нужны.
 - `scan.db` версии 3: `git_project`, `scan_run`, `file_hash`, `file_snapshot`, `req` (глобальный `UNIQUE(code)`, `is_export`), `point` (`is_export`), `point_content` (номерные поля); 4 PRAGMA, создание с нуля, версия ≠ 3 → `12`.
 - `is_export` (`0` — экспорт не выполнялся, `1` — выполнен) на `req` и `point`; триггеры сбрасывают флаг при изменении `req.code/name/status`, `point.point/status`, а также вставке/изменении/удалении `point_content`. Обновление только `is_export` и повторный скан без изменений флаг сохраняют.
@@ -24,7 +24,7 @@
 - `scan/files.py`: `ls-tree`, include/exclude/secrets, размер, бинарность, LFS, кодировки, `blob_hash`, последний коммит файла.
 - `scan/scanner.py`: ветки и `BRANCH_INCLUDE`/`BRANCH_EXCLUDE`, транзакция на проект, идемпотентность, reconciliation, GC хэшей, `--dry-run`/`--force`/`--strict`, Rich progress bar (интерактивно), сбой истории коммитов → `partial`/`11`.
 - `scan` не вызывает LLM, не требует ключей и не создаёт/не меняет `analysis.db`; `LINK_REQUIREMENTS` и `ATTACH` работают по общему `url_key`.
-- Тесты: `228` проходят на временных git-репозиториях (включая инвалидацию `is_export`, номерные поля, UTC-нормализацию дат).
+- Тесты: `230` проходят на временных git-репозиториях (включая инвалидацию `is_export`, номерные поля, UTC-нормализацию дат, уникальность имён отчётов и раздельные таймауты провайдеров).
 - `scan-git-push-TZ.md` v2, `dop_tz01.md` ред. 3.2, `docs/SPRINTS.md`, README, `user-guide.html`.
 
 ## Архитектурные решения

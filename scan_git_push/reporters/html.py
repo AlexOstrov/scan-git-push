@@ -9,6 +9,7 @@ from jinja2 import Environment
 from loguru import logger
 
 from scan_git_push.analyzer import AnalysisResult
+from scan_git_push.reporters.naming import report_stem
 
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="ru">
@@ -137,7 +138,8 @@ class HTMLReporter:
     ) -> Path:
         """Write the HTML report and return the file path."""
         date_str = datetime.now().strftime("%Y%m%d")
-        filename = Path(output_dir) / f"{repo_name}_{date_str}.html"
+        stem = report_stem(repo_name, project_url)
+        filename = Path(output_dir) / f"{stem}_{date_str}.html"
 
         template = self.env.from_string(HTML_TEMPLATE)
         content = template.render(

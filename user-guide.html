@@ -263,7 +263,6 @@ source .venv/bin/activate</code></pre>
     "MAX_PATCH_CHARS_PER_FILE": 4000,
     "MAX_CHUNK_RETRIES": 3,
     "BACKOFF_FACTOR": 2,
-    "CONCURRENCY": 1,
     "EXCLUDE": ["*.lock", "*.min.js", "dist/**", "vendor/**", "node_modules/**"],
     "PROMPT_VERSION": 1,
     "LINK_REQUIREMENTS": true,
@@ -280,6 +279,7 @@ source .venv/bin/activate</code></pre>
     "PROBE_OLLAMA": true,
     "MODEL_CACHE_TTL": 3600,
     "HTTP_TIMEOUT": 30,
+    "OLLAMA_HTTP_TIMEOUT": 180,
     "MISTRAL_MODEL": "mistral-small-latest",
     "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1",
     "OLLAMA_BASE_URL": "http://localhost:11434",
@@ -307,7 +307,8 @@ source .venv/bin/activate</code></pre>
   <tr><td><code>LLM.MODEL</code></td><td>Модель по умолчанию (<code>provider/model</code>)</td><td><code>null</code> — выбор в меню</td></tr>
   <tr><td><code>LLM.MISTRAL_MODEL</code></td><td>Модель Mistral AI</td><td><code>mistral-small-latest</code></td></tr>
   <tr><td><code>LLM.OLLAMA_MODEL</code></td><td>Модель Ollama</td><td><code>llama3.1:8b</code></td></tr>
-  <tr><td><code>LLM.HTTP_TIMEOUT</code></td><td>Таймаут HTTP-запроса к LLM, секунды (5–120)</td><td>30</td></tr>
+  <tr><td><code>LLM.HTTP_TIMEOUT</code></td><td>Таймаут HTTP-запроса к Mistral, секунды (5–120)</td><td>30</td></tr>
+  <tr><td><code>LLM.OLLAMA_HTTP_TIMEOUT</code></td><td>Таймаут HTTP-запроса к Ollama, секунды (5–600)</td><td>180</td></tr>
 </table>
 <ol style="padding-left:20px;">
   <li>Зарегистрируйтесь на <code>console.mistral.ai</code> и создайте API-ключ в разделе <em>API Keys</em></li>
@@ -390,10 +391,10 @@ python -m scan_git_push --scan --json   # устаревший алиас</code>
 <p>Формированный вывод с прогресс-баром, списком файлов и саммари каждого коммита; в конце — сводка по каждому проекту и общий итог.</p>
 
 <h3>Markdown-отчёт</h3>
-<p>Сохраняется в <code>reports/{repo}_{date}.md</code> — структурированный отчёт со всеми коммитами. Дополнительно создаётся сводный <code>reports/_summary_{date}.md</code>.</p>
+<p>Сохраняется в <code>reports/{repo}-{sha256(url_key)[:6]}_{date}.md</code> — структурированный отчёт со всеми коммитами. Дополнительно создаётся сводный <code>reports/_summary_{date}.md</code>.</p>
 
 <h3>Интерактивный HTML-отчёт</h3>
-<p>Сохраняется в <code>reports/{repo}_{date}.html</code> и <code>reports/_summary_{date}.html</code> — автономные файлы (не требуют интернета) с:</p>
+<p>Сохраняется в <code>reports/{repo}-{sha256(url_key)[:6]}_{date}.html</code> и <code>reports/_summary_{date}.html</code> — автономные файлы (не требуют интернета) с:</p>
 <ul style="padding-left:20px;">
   <li>Навигацией по коммитам (боковая панель)</li>
   <li>Статистикой (коммиты, файлы, LLM chunks)</li>

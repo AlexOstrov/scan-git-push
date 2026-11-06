@@ -89,7 +89,6 @@
     "MAX_PATCH_CHARS_PER_FILE": 4000,
     "MAX_CHUNK_RETRIES": 3,
     "BACKOFF_FACTOR": 2,
-    "CONCURRENCY": 1,
     "EXCLUDE": [
       "*.lock",
       "package-lock.json",
@@ -122,6 +121,7 @@
     "PROBE_OLLAMA": true,
     "MODEL_CACHE_TTL": 3600,
     "HTTP_TIMEOUT": 30,
+    "OLLAMA_HTTP_TIMEOUT": 180,
     "MISTRAL_MODEL": "mistral-small-latest",
     "MISTRAL_ENDPOINT": "https://api.mistral.ai/v1",
     "OLLAMA_BASE_URL": "http://localhost:11434",
@@ -213,7 +213,8 @@ MISTRAL_API_KEY=...    # обязателен только для провайд
 2. Уже успешно проанализированные коммиты исключаются из обработки.
 3. `--reanalyze` игнорирует кэш и повторно анализирует коммиты.
 4. Неуспешный анализ не сохраняется и будет повторён.
-5. Записи старше `DB_RETENTION_DAYS` удаляются после успешного запуска.
+5. Записи старше `DB_RETENTION_DAYS` удаляются после успешного запуска по столбцу `analyzed_commits.commit_date` (дата коммита).
+6. Если запрошенный `--days` больше `DB_RETENTION_DAYS`, данные за пределами хранения уже удалены: отчёт формируется по оставшимся записям, считается неполным, но завершается с кодом `0`.
 
 ### 7.4 `report-from-db`
 
@@ -234,7 +235,7 @@ MISTRAL_API_KEY=...    # обязателен только для провайд
 - `analyzed_commits(..., UNIQUE(git_project_id, sha))`;
 - `commit_files(commit_id, path, file_status, additions, deletions, is_binary, truncated, PRIMARY KEY(commit_id, path))`.
 
-Правила:
+Полный DDL со всеми столбцами и индексами — в приложении A. Правила:
 
 - `url_key`: remote — `host/path` без схемы, учётных данных и `.git`; local — абсолютный POSIX-путь. Тот же ключ используется в `scan.db`, что позволяет связывать БД через `ATTACH`.
 - PRAGMA: `foreign_keys = ON`, `journal_mode = WAL`, `synchronous = NORMAL` (до транзакции), `busy_timeout = 5000`.
@@ -266,7 +267,7 @@ MISTRAL_API_KEY=...    # обязателен только для провайд
 
 ### 10.2 Markdown
 
-`reports/{repo}_{YYYYMMDD}.md`:
+`reports/{repo}-{sha256(url_key)[:6]}_{YYYYMMDD}.md`:
 
 - проект, период (committer date), дата генерации;
 - по каждому коммиту: SHA, автор, сообщение, таблица файлов, требования, саммари;
@@ -274,7 +275,7 @@ MISTRAL_API_KEY=...    # обязателен только для провайд
 
 ### 10.3 HTML
 
-`reports/{repo}_{YYYYMMDD}.html`:
+`reports/{repo}-{sha256(url_key)[:6]}_{YYYYMMDD}.html`:
 
 - полностью автономный файл (встроенные CSS/JS, без CDN);
 - боковая навигация по коммитам;
@@ -315,7 +316,7 @@ python -m scan_git_push scan ...        # см. dop_tz01.md
 | `11` | Частичный успех: часть проектов/коммитов не обработана |
 | `12` | Несовместимая схема БД |
 
-Приоритет кодов анализа: `12` → `9` → `2`/`5` → `11` → `0`. Для режима `scan` действует приоритет из `dop_tz01.md`.
+Приоритет кодов анализа: `12` → `9` → (нет обработанных проектов: `2` при ошибке аутентификации, иначе `5`) → `11` → `0`. Ошибка аутентификации одного проекта при успешной обработке остальных даёт `11`, а не `2`. Для режима `scan` действует приоритет из `dop_tz01.md`.
 
 `--json` печатает в stdout один JSON-объект (`generated_at`, `days`, `model`, `projects[]`, `summary`, `errors`, `analyzed_now`, `exit_code`); человекочитаемый вывод уходит в stderr.
 
@@ -328,7 +329,7 @@ python -m scan_git_push scan ...        # см. dop_tz01.md
 | Ошибка одного проекта | Записать в `errors`, продолжить остальные; итог `11` |
 | Ошибка одного коммита | Записать в лог, пропустить коммит; итог `11` |
 | Сетевые ошибки LLM | До `MAX_CHUNK_RETRIES` попыток, backoff `BACKOFF_FACTOR` |
-| Таймаут LLM | `LLM.HTTP_TIMEOUT` (30 с) на запрос |
+| Таймаут LLM | `LLM.OLLAMA_HTTP_TIMEOUT` (180 с) для Ollama; `LLM.HTTP_TIMEOUT` (30 с) для Mistral |
 | Ошибка git-команды | Классификация и сообщение; проект пропускается |
 | Ошибка записи в БД | Завершение с кодом `9` |
 | Несовместимая схема | Завершение с кодом `12` |
@@ -424,7 +425,7 @@ scan-git-push/
 | Python | >= 3.11 |
 | git | >= 2.30 |
 | Зависимости | только из `pyproject.toml` |
-| Таймаут HTTP | 30 с (`LLM.HTTP_TIMEOUT`) |
+| Таймаут HTTP | Ollama: 180 с (`LLM.OLLAMA_HTTP_TIMEOUT`); Mistral: 30 с (`LLM.HTTP_TIMEOUT`) |
 | Retry LLM | `MAX_CHUNK_RETRIES`, backoff `BACKOFF_FACTOR` |
 | Размер чанка | <= `MAX_DIFF_CHARS_PER_CHUNK` |
 | Патч на файл | <= `MAX_PATCH_CHARS_PER_FILE` |
@@ -433,3 +434,70 @@ scan-git-push/
 | Вывод | UTF-8 |
 | Логирование | rich + файл `logs/` с ротацией |
 | Отчёты | MD + HTML без внешних зависимостей |
+
+---
+
+## Приложение A. Полный DDL `analysis.db`
+
+Нормативная схема версии `1` (соответствует `SCHEMA_SQL` в `scan_git_push/database.py`):
+
+```sql
+CREATE TABLE IF NOT EXISTS schema_version (
+    version     INTEGER NOT NULL,
+    applied_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS git_project (
+    id          INTEGER PRIMARY KEY,
+    url         TEXT    NOT NULL,
+    url_key     TEXT    NOT NULL UNIQUE,
+    author      TEXT,
+    status      INTEGER NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
+    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE TABLE IF NOT EXISTS analyzed_commits (
+    id              INTEGER PRIMARY KEY,
+    git_project_id  INTEGER NOT NULL REFERENCES git_project(id) ON DELETE CASCADE,
+    sha             TEXT    NOT NULL,
+    commit_date     TEXT    NOT NULL,
+    author_date     TEXT,
+    analyzed_at     TEXT    NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'success'
+                            CHECK (status IN ('success', 'failed')),
+    summary         TEXT,
+    author          TEXT,
+    committer       TEXT,
+    email           TEXT,
+    message         TEXT,
+    files_count     INTEGER NOT NULL DEFAULT 0,
+    additions       INTEGER NOT NULL DEFAULT 0,
+    deletions       INTEGER NOT NULL DEFAULT 0,
+    chunks_count    INTEGER NOT NULL DEFAULT 0,
+    provider        TEXT,
+    model           TEXT,
+    prompt_version  INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (git_project_id, sha)
+);
+
+CREATE TABLE IF NOT EXISTS commit_files (
+    commit_id   INTEGER NOT NULL REFERENCES analyzed_commits(id) ON DELETE CASCADE,
+    path        TEXT    NOT NULL,
+    file_status TEXT    NOT NULL DEFAULT 'modified',
+    additions   INTEGER NOT NULL DEFAULT 0,
+    deletions   INTEGER NOT NULL DEFAULT 0,
+    is_binary   INTEGER NOT NULL DEFAULT 0 CHECK (is_binary IN (0, 1)),
+    truncated   INTEGER NOT NULL DEFAULT 0 CHECK (truncated IN (0, 1)),
+    PRIMARY KEY (commit_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_commits_project_date
+    ON analyzed_commits(git_project_id, commit_date);
+
+CREATE INDEX IF NOT EXISTS idx_commits_analyzed_at
+    ON analyzed_commits(analyzed_at);
+```
+
+`commit_date` и `author_date` хранятся в UTC (`+00:00`). Индекс `idx_commits_analyzed_at` служит для диагностики по времени анализа; ретенция `DB_RETENTION_DAYS` выполняется по `commit_date` — см. §7.3.
+

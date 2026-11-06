@@ -203,6 +203,14 @@ class TestModelRegistry:
         assert provider.provider_name == "ollama"
         assert provider.model == "llama3"
 
+    def test_build_uses_provider_specific_timeouts(self, settings) -> None:
+        settings.llm.http_timeout = 30
+        settings.llm.ollama_http_timeout = 180
+        ollama = ModelRegistry(settings).build(ModelOption("ollama", "llama3"))
+        mistral = ModelRegistry(settings).build(ModelOption("mistral", "m"))
+        assert ollama.timeout == 180
+        assert mistral.timeout == 30
+
     @patch("scan_git_push.llm.registry.OllamaProvider")
     def test_discover_merges_providers(self, ollama_cls: MagicMock, settings) -> None:
         instance = MagicMock()

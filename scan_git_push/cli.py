@@ -47,6 +47,7 @@ from scan_git_push.scan.scanner import (
     ScanOptions,
     Scanner,
     json_payload as scan_json_payload,
+    redact_credentials,
 )
 
 app = typer.Typer(
@@ -385,17 +386,19 @@ def run_analysis(
         except GitAuthError as exc:
             state.auth_failures += 1
             state.failed_projects += 1
+            message = redact_credentials(str(exc))
             state.errors.append(
-                {"project": display, "type": "auth", "error": str(exc)}
+                {"project": display, "type": "auth", "error": message}
             )
-            console.print(f"[red]Auth error for {display}: {exc}[/red]")
+            console.print(f"[red]Auth error for {display}: {message}[/red]")
             continue
         except (GitError, OSError) as exc:
             state.failed_projects += 1
+            message = redact_credentials(str(exc))
             state.errors.append(
-                {"project": display, "type": "git", "error": str(exc)}
+                {"project": display, "type": "git", "error": message}
             )
-            console.print(f"[red]Cannot access {display}: {exc}[/red]")
+            console.print(f"[red]Cannot access {display}: {message}[/red]")
             continue
         except sqlite3.Error as exc:
             console.print(f"[red]Database failure: {exc}[/red]")

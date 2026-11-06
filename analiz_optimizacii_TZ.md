@@ -2,7 +2,7 @@
 
 **Дата:** 01.11.2026  
 **Основание:** `scan-git-push-TZ.md` (основное ТЗ), `dop_tz01.md` (редакция 3), фактический код `scan_git_push/*`  
-**Статус:** анализ, решения требуют подтверждения
+**Статус:** исполнено; нормативно — ТЗ v2
 
 ---
 
@@ -82,7 +82,6 @@
     "MAX_PATCH_CHARS_PER_FILE": 4000,
     "MAX_CHUNK_RETRIES": 3,
     "BACKOFF_FACTOR": 2,
-    "CONCURRENCY": 1,
     "EXCLUDE": ["*.lock", "*.min.js", "*.min.css", "*.map", "dist/**", "vendor/**"],
     "PROMPT_VERSION": 1,
     "LINK_REQUIREMENTS": false,
@@ -344,7 +343,7 @@ CREATE INDEX IF NOT EXISTS idx_commits_project_date
 | Интерактивный выбор | `--model provider/model`, `--non-interactive`; при `LLM.MODEL` в конфиге выбор не запрашивается |
 | Повторный анализ другим моделью | `--reanalyze` + поля `provider`, `model`, `prompt_version` в БД |
 | Много мелких коммитов | `ANALYSIS.BATCH_MAX_COMMITS` (по умолчанию 1 = выключено): группировать только коммиты с суммарным diff < 2000 символов |
-| Последовательный анализ | `ANALYSIS.CONCURRENCY` (1 по умолчанию; 2–4 для Mistral, 1 для локальной Ollama) |
+| Последовательный анализ | `ANALYSIS.CONCURRENCY` не реализован и удалён из конфига; проекты и коммиты обрабатываются последовательно |
 
 ### 4.7. Прочие улучшения основного ТЗ
 

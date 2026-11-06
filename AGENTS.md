@@ -94,6 +94,6 @@ Memory files: `docs/memory/{STATE,FEATURES,DECISIONS,CHANGELOG}.md`
 ## Reports
 
 Generated to `reports/`:
-- `{repo}_{date}.md` — Markdown report
-- `{repo}_{date}.html` — interactive HTML
+- `{repo}-{sha256(url_key)[:6]}_{date}.md` — Markdown report
+- `{repo}-{sha256(url_key)[:6]}_{date}.html` — interactive HTML
 - `_summary_{date}.md` / `.html` — cross-project summary

@@ -88,7 +88,6 @@ class AnalysisSettings(_Section):
     )
     max_chunk_retries: int = Field(default=3, alias="MAX_CHUNK_RETRIES", ge=1, le=5)
     backoff_factor: float = Field(default=2.0, alias="BACKOFF_FACTOR", ge=1.0, le=10.0)
-    concurrency: int = Field(default=1, alias="CONCURRENCY", ge=1, le=8)
     exclude: list[str] = Field(
         default_factory=lambda: list(DEFAULT_ANALYSIS_EXCLUDE), alias="EXCLUDE"
     )
@@ -110,6 +109,9 @@ class LLMSettings(_Section):
     probe_ollama: bool = Field(default=True, alias="PROBE_OLLAMA")
     model_cache_ttl: int = Field(default=3_600, alias="MODEL_CACHE_TTL", ge=0, le=86_400)
     http_timeout: float = Field(default=30.0, alias="HTTP_TIMEOUT", ge=5.0, le=120.0)
+    ollama_http_timeout: float = Field(
+        default=180.0, alias="OLLAMA_HTTP_TIMEOUT", ge=5.0, le=600.0
+    )
 
     mistral_model: str = Field(default="mistral-small-latest", alias="MISTRAL_MODEL")
     mistral_endpoint: str = Field(

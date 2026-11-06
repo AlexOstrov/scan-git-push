@@ -134,3 +134,17 @@ class TestReportService:
         assert summary.markdown.exists()
         assert summary.html.exists()
         assert summary.to_dict()["markdown"].endswith(".md")
+
+    def test_same_name_projects_do_not_overwrite_reports(self, tmp_path: Path) -> None:
+        service = ReportService(MagicMock(), tmp_path)
+        first = service.generate_project(
+            "backend", "https://github.com/owner-a/backend", [_result()], 7
+        )
+        second = service.generate_project(
+            "backend", "https://github.com/owner-b/backend", [_result()], 7
+        )
+        assert first.markdown != second.markdown
+        assert first.html != second.html
+        assert first.markdown.exists()
+        assert second.markdown.exists()
+        assert "-" in first.markdown.stem

@@ -8,6 +8,7 @@ from pathlib import Path
 from loguru import logger
 
 from scan_git_push.analyzer import AnalysisResult
+from scan_git_push.reporters.naming import report_stem
 
 
 class MarkdownReporter:
@@ -23,7 +24,8 @@ class MarkdownReporter:
     ) -> Path:
         """Write the Markdown report and return the file path."""
         date_str = datetime.now().strftime("%Y%m%d")
-        filename = Path(output_dir) / f"{repo_name}_{date_str}.md"
+        stem = report_stem(repo_name, project_url)
+        filename = Path(output_dir) / f"{stem}_{date_str}.md"
 
         lines: list[str] = [
             f"# Git Push Analysis: {repo_name}",

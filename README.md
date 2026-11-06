@@ -142,8 +142,8 @@ python -m scan_git_push --scan --json
 ## Отчёты
 
 ```
-reports/{repo}_{YYYYMMDD}.md
-reports/{repo}_{YYYYMMDD}.html
+reports/{repo}-{sha256(url_key)[:6]}_{YYYYMMDD}.md
+reports/{repo}-{sha256(url_key)[:6]}_{YYYYMMDD}.html
 reports/_summary_{YYYYMMDD}.md
 reports/_summary_{YYYYMMDD}.html
 reports/requirements_{YYYYMMDD}.html   # report-from-db --req

@@ -259,6 +259,7 @@ python -m scan_git_push report-from-db [--config PATH] [--project URL ...] --req
 - Файл: `reports/requirements_YYYYMMDD.html` в `OUTPUT_DIR`.
 - `--project` ограничивает отчёт выбранными проектами (по `url_key`).
 - Итоги: количество требований и количество разделов.
+- Если `scan.db` отсутствует, команда завершается кодом `9` (`database does not exist`); при несовместимой версии схемы — кодом `12`.
 - Без `--req` команда работает как раньше: отчёт по коммитам из `analysis.db`.
 
 ---
@@ -1015,10 +1016,12 @@ Exit code:      0
     "projects_partial": 0,
     "projects_failed": 0,
     "files_scanned": 1550,
+    "files_skipped": 21,
     "markers_found": 414,
     "errors_count": 2
   },
-  "exit_code": 0
+  "exit_code": 0,
+  "dry_run": false
 }
 ```
 
