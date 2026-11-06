@@ -156,9 +156,10 @@ def _parse_attributes(line: str, index: int) -> tuple[dict[str, str], list[str],
                 escaped = line[index + 1]
                 if escaped in {'"', "\\"}:
                     value_chars.append(escaped)
-                    index += 2
-                    continue
-                value_chars.append(escaped)
+                else:
+                    # Keep unknown escapes literally so Windows paths such as
+                    # ``C:\users`` are not mangled into ``C:users``.
+                    value_chars.extend(("\\", escaped))
                 index += 2
                 continue
             if char == '"':

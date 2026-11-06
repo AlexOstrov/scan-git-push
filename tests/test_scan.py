@@ -673,6 +673,51 @@ class TestCommitHistory:
         assert project.status == "partial"
         assert any(error.get("type") == "commit-history" for error in project.errors)
 
+    def test_second_run_limits_history_to_changed_paths(
+        self,
+        config: Path,
+        repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from scan_git_push.scan import scanner as scanner_module
+
+        calls: list[tuple[str, list[str] | None]] = []
+        original = scanner_module.last_commit_map
+
+        def spy(
+            mirror: Path, branch: str, paths: list[str] | None = None
+        ) -> dict[str, object]:
+            calls.append((branch, None if paths is None else sorted(paths)))
+            return original(mirror, branch, paths)
+
+        monkeypatch.setattr(scanner_module, "last_commit_map", spy)
+        run_scanner(config)
+        calls.clear()
+
+        # No file changed: commit history must not be traversed at all.
+        outcome, _ = run_scanner(config)
+        assert outcome.exit_code == 0
+        assert calls == []
+
+        # Only changed and newly added paths are passed to git log.
+        write_text(
+            repo,
+            "docs/req.md",
+            '<!-- REQ-META id="REQ_10" point="10.1" name="Новое" -->\n',
+        )
+        write_text(
+            repo,
+            "docs/new.md",
+            '<!-- REQ-META id="REQ_11" point="11.1" name="Ещё" -->\n',
+        )
+        commit(repo, "change two files")
+        outcome, _ = run_scanner(config)
+        assert outcome.exit_code == 0
+        assert len(calls) == 1
+        branch, paths = calls[0]
+        assert branch == "main"
+        assert paths == ["docs/new.md", "docs/req.md"]
+
 
 class TestAnalysisIntegration:
     def test_scan_does_not_create_analysis_db(self, config: Path) -> None:

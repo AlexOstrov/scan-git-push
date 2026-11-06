@@ -183,23 +183,39 @@ def list_tree(mirror: Path, branch: str) -> list[TreeEntry]:
     return entries
 
 
-def last_commit_map(mirror: Path, branch: str) -> dict[str, CommitInfo]:
-    """Map every path in the branch to the last commit that touched it.
+def last_commit_map(
+    mirror: Path, branch: str, paths: Sequence[str] | None = None
+) -> dict[str, CommitInfo]:
+    """Map paths to the last commit that touched them.
 
     A single ``git log --name-only -z`` pass keeps the scan fast even for large
-    histories (``dop_tz01.md``, section 13.1).
+    histories (``dop_tz01.md``, section 13.1). When ``paths`` is given, the
+    history walk is limited to those paths; an empty sequence returns early so
+    an unchanged branch does not traverse its history at all.
     """
-    output = run_git(
-        [
-            "log",
-            "--format=%x1e%H%x1f%an%x1f%cn",
-            "--name-only",
-            "-z",
-            branch,
-        ],
-        cwd=mirror,
-        timeout=600.0,
-    )
+    if paths is not None and not paths:
+        return {}
+
+    args = [
+        "log",
+        "--format=%x1e%H%x1f%an%x1f%cn",
+        "--name-only",
+        "-z",
+        branch,
+    ]
+    if paths is not None:
+        limited: list[str] | None = [f":(literal){path}" for path in paths]
+        # Windows limits a command line to ~32k characters. For a large first
+        # run a single unrestricted history walk is cheaper than chunking.
+        if (
+            len(limited) > 2_000
+            or sum(len(item) + 1 for item in limited) > 30_000
+        ):
+            limited = None
+        if limited is not None:
+            args.extend(["--", *limited])
+
+    output = run_git(args, cwd=mirror, timeout=600.0)
 
     mapping: dict[str, CommitInfo] = {}
     for chunk in output.split("\x1e"):

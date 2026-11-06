@@ -42,6 +42,13 @@ class TestCanonicalMarker:
         assert not result.errors
         assert result.occurrences[0].name == 'Имя "в кавычках"'
 
+    def test_unknown_escape_keeps_literal_backslash(self) -> None:
+        result = parse_markers(
+            r'<!-- REQ-META id="REQ_1" point="1" name="C:\users\new" -->'
+        )
+        assert not result.errors
+        assert result.occurrences[0].name == r"C:\users\new"
+
     def test_empty_name_is_absent(self) -> None:
         result = parse_markers('<!-- REQ-META id="REQ_1" point="1" name="" -->')
         assert not result.errors

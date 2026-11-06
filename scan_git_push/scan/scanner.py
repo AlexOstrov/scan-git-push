@@ -543,6 +543,7 @@ class Scanner:
         project_log: Any,
     ) -> BranchResult:
         branch_result = BranchResult(name=branch)
+        pending_commits: set[str] = set()
         previous: dict[str, dict[str, Any]] = {}
         if not self.dry_run and project_id is not None:
             previous = self.db.get_snapshots(project_id, branch)
@@ -561,20 +562,6 @@ class Scanner:
             self._print_error(display, f"{branch}: cannot list tree", str(exc))
             project_log.error("{}: cannot list tree of {}: {}", display, branch, exc)
             return branch_result
-
-        try:
-            commits = last_commit_map(mirror_path, branch)
-        except GitError as exc:
-            commits = {}
-            branch_result.ok = False
-            message = redact_credentials(f"cannot read commit history: {exc}")
-            branch_result.errors.append(
-                {"type": "commit-history", "branch": branch, "message": message}
-            )
-            self._print_error(display, f"{branch}: commit history", message)
-            project_log.error(
-                "{}: cannot read commit history of {}: {}", display, branch, message
-            )
 
         reader: BatchReader | None = None
         try:
@@ -666,16 +653,20 @@ class Scanner:
                                 branch,
                                 project_log,
                             )
-                    info = commits.get(entry.path)
+                    # Unchanged files keep the commit metadata from the previous
+                    # snapshot; the history walk is limited to changed paths.
+                    previous_sha = previous_row.get("commit_sha")
+                    if previous_sha is None:
+                        pending_commits.add(entry.path)
                     branch_result.files.append(
                         ScannedFile(
                             path=entry.path,
                             blob_hash=blob_hash,
                             size=size,
                             encoding=previous_row["encoding"],
-                            commit_sha=info.sha if info else None,
-                            author=info.author if info else None,
-                            committer=info.committer if info else None,
+                            commit_sha=previous_sha,
+                            author=previous_row.get("author"),
+                            committer=previous_row.get("committer"),
                             changed=False,
                         )
                     )
@@ -726,16 +717,16 @@ class Scanner:
                     else:
                         project_log.debug("{} {}: no REQ-META markers", display, entry.path)
 
-                info = commits.get(entry.path)
+                pending_commits.add(entry.path)
                 branch_result.files.append(
                     ScannedFile(
                         path=entry.path,
                         blob_hash=blob_hash,
                         size=size,
                         encoding=decoded.encoding,
-                        commit_sha=info.sha if info else None,
-                        author=info.author if info else None,
-                        committer=info.committer if info else None,
+                        commit_sha=None,
+                        author=None,
+                        committer=None,
                         changed=True,
                         occurrences=parsed.occurrences,
                     )
@@ -743,6 +734,34 @@ class Scanner:
         finally:
             if reader is not None:
                 reader.close()
+
+        if pending_commits:
+            try:
+                commits = last_commit_map(
+                    mirror_path, branch, sorted(pending_commits)
+                )
+            except GitError as exc:
+                message = redact_credentials(f"cannot read commit history: {exc}")
+                branch_result.ok = False
+                branch_result.errors.append(
+                    {"type": "commit-history", "branch": branch, "message": message}
+                )
+                self._print_error(display, f"{branch}: commit history", message)
+                project_log.error(
+                    "{}: cannot read commit history of {}: {}",
+                    display,
+                    branch,
+                    message,
+                )
+            else:
+                for item in branch_result.files:
+                    if item.commit_sha is not None:
+                        continue
+                    info = commits.get(item.path)
+                    if info is not None:
+                        item.commit_sha = info.sha
+                        item.author = info.author
+                        item.committer = info.committer
 
         return branch_result
 
