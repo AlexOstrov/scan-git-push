@@ -1,4 +1,4 @@
-"""SQLite storage for the ``scan`` mode (``scan.db``, schema version 3).
+"""SQLite storage for the ``scan`` mode (``scan.db``, schema version 4).
 
 The schema is created from scratch; migrations are intentionally not supported
 (``dop_tz01.md``, section 7.5). The database never stores file contents.
@@ -16,9 +16,10 @@ from urllib.parse import urlsplit
 
 from loguru import logger
 
+from scan_git_push.analysis.filters import path_matches
 from scan_git_push.git.url import is_local_path, normalize_url, url_key
 
-SCAN_SCHEMA_VERSION = 3
+SCAN_SCHEMA_VERSION = 4
 RUNNING_RUN_TTL = timedelta(hours=24)
 
 SCAN_SCHEMA_SQL = """
@@ -107,6 +108,20 @@ CREATE TABLE IF NOT EXISTS scan_run (
     message         TEXT
 );
 
+-- Статистика по каждому значению SCAN.INCLUDE в разрезе проекта.
+CREATE TABLE IF NOT EXISTS include_stat (
+    id              INTEGER PRIMARY KEY,
+    git_project_id  INTEGER NOT NULL REFERENCES git_project(id) ON DELETE CASCADE,
+    pattern         TEXT    NOT NULL,
+    position        INTEGER NOT NULL CHECK (position >= 0),
+    files_count     INTEGER NOT NULL DEFAULT 0 CHECK (files_count >= 0),
+    markers_count   INTEGER NOT NULL DEFAULT 0 CHECK (markers_count >= 0),
+    status          INTEGER NOT NULL DEFAULT 1 CHECK (status IN (0, 1)),
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE (git_project_id, pattern)
+);
+
 CREATE INDEX IF NOT EXISTS idx_point_req
     ON point(req_id);
 
@@ -121,6 +136,9 @@ CREATE INDEX IF NOT EXISTS idx_file_snapshot_project_branch
 
 CREATE INDEX IF NOT EXISTS idx_scan_run_project_started
     ON scan_run(git_project_id, started_at);
+
+CREATE INDEX IF NOT EXISTS idx_include_stat_project
+    ON include_stat(git_project_id, position);
 
 -- Инвалидация экспорта: любое смысловое изменение сбрасывает is_export.
 CREATE TRIGGER IF NOT EXISTS trg_req_is_export
@@ -175,6 +193,7 @@ _REQUIRED_TABLES = {
     "file_snapshot",
     "point_content",
     "scan_run",
+    "include_stat",
 }
 
 
@@ -203,8 +222,21 @@ def author_from_url(value: str, base_dir: Path | None = None) -> str | None:
     return None
 
 
+def _normalize_include_patterns(patterns: Iterable[str]) -> list[str]:
+    """Strip, drop empty and duplicate ``SCAN.INCLUDE`` values, keep order."""
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for raw in patterns:
+        pattern = str(raw).strip()
+        if not pattern or pattern in seen:
+            continue
+        seen.add(pattern)
+        ordered.append(pattern)
+    return ordered
+
+
 class ScanDatabase:
-    """Manages ``scan.db`` (schema version 3)."""
+    """Manages ``scan.db`` (schema version 4)."""
 
     def __init__(self, db_path: Path | str) -> None:
         path = Path(db_path)
@@ -350,6 +382,169 @@ class ScanDatabase:
                 "SELECT id FROM git_project WHERE url_key = ?", (key,)
             ).fetchone()
         return int(row["id"]) if row else None
+
+    # ------------------------------------------------------------ include stat
+    def sync_include_patterns(
+        self, conn: sqlite3.Connection, patterns: Iterable[str]
+    ) -> None:
+        """Synchronize ``include_stat`` with the current ``SCAN.INCLUDE``.
+
+        Missing patterns are inserted with zero counters and ``status = 1``;
+        patterns absent from the configuration are archived (``status = 0``)
+        for every project. Reactivating an archived pattern resets its counters
+        to zero until the next reconciliation.
+        """
+        ordered = _normalize_include_patterns(patterns)
+        projects = conn.execute("SELECT id FROM git_project ORDER BY id").fetchall()
+        for project in projects:
+            self._sync_project_include_patterns(
+                conn, int(project["id"]), ordered, deactivate=True
+            )
+
+    def ensure_include_patterns(
+        self, conn: sqlite3.Connection, project_id: int, patterns: Iterable[str]
+    ) -> None:
+        """Ensure pattern rows exist for one project (new project mid-run)."""
+        self._sync_project_include_patterns(
+            conn,
+            project_id,
+            _normalize_include_patterns(patterns),
+            deactivate=True,
+        )
+
+    def _sync_project_include_patterns(
+        self,
+        conn: sqlite3.Connection,
+        project_id: int,
+        patterns: Sequence[str],
+        *,
+        deactivate: bool,
+    ) -> None:
+        now = now_iso()
+        active = set(patterns)
+        for position, pattern in enumerate(patterns):
+            row = conn.execute(
+                "SELECT id, position, status FROM include_stat "
+                "WHERE git_project_id = ? AND pattern = ?",
+                (project_id, pattern),
+            ).fetchone()
+            if row is None:
+                conn.execute(
+                    "INSERT INTO include_stat "
+                    "(git_project_id, pattern, position, files_count, "
+                    "markers_count, status, updated_at) "
+                    "VALUES (?, ?, ?, 0, 0, 1, ?)",
+                    (project_id, pattern, position, now),
+                )
+                continue
+            if row["status"] == 0:
+                conn.execute(
+                    "UPDATE include_stat SET status = 1, position = ?, "
+                    "files_count = 0, markers_count = 0, updated_at = ? "
+                    "WHERE id = ?",
+                    (position, now, row["id"]),
+                )
+            elif int(row["position"]) != position:
+                conn.execute(
+                    "UPDATE include_stat SET position = ?, updated_at = ? WHERE id = ?",
+                    (position, now, row["id"]),
+                )
+
+        if not deactivate:
+            return
+        rows = conn.execute(
+            "SELECT id, pattern FROM include_stat "
+            "WHERE git_project_id = ? AND status = 1",
+            (project_id,),
+        ).fetchall()
+        for row in rows:
+            if row["pattern"] not in active:
+                conn.execute(
+                    "UPDATE include_stat SET status = 0, updated_at = ? WHERE id = ?",
+                    (now, row["id"]),
+                )
+
+    def recompute_include_stats(
+        self, conn: sqlite3.Connection, project_id: int
+    ) -> None:
+        """Recount files and markers for every active pattern of a project.
+
+        Counters are taken from ``file_snapshot`` (only successfully scanned
+        files) aggregated over all branches. A file matching several patterns
+        is counted in each of them. Marker counters are the number of
+        ``point_content`` rows attached to the counted snapshots.
+        """
+        patterns = conn.execute(
+            "SELECT id, pattern FROM include_stat "
+            "WHERE git_project_id = ? AND status = 1 "
+            "ORDER BY position, id",
+            (project_id,),
+        ).fetchall()
+        if not patterns:
+            return
+
+        counts: dict[int, list[int]] = {
+            int(row["id"]): [0, 0] for row in patterns
+        }
+        files = conn.execute(
+            """
+            SELECT fs.path AS path, COUNT(pc.id) AS marker_count
+            FROM file_snapshot fs
+            LEFT JOIN point_content pc ON pc.file_id = fs.id
+            WHERE fs.git_project_id = ?
+            GROUP BY fs.id
+            """,
+            (project_id,),
+        ).fetchall()
+        for file in files:
+            path = str(file["path"])
+            markers = int(file["marker_count"] or 0)
+            for row in patterns:
+                if not path_matches(path, row["pattern"]):
+                    continue
+                counts[int(row["id"])][0] += 1
+                counts[int(row["id"])][1] += markers
+
+        now = now_iso()
+        for pattern_id, (files_count, markers_count) in counts.items():
+            conn.execute(
+                "UPDATE include_stat SET files_count = ?, markers_count = ?, "
+                "updated_at = ? WHERE id = ? "
+                "AND (files_count <> ? OR markers_count <> ?)",
+                (
+                    files_count,
+                    markers_count,
+                    now,
+                    pattern_id,
+                    files_count,
+                    markers_count,
+                ),
+            )
+
+    def include_stats(
+        self, project_keys: Sequence[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return active per-pattern statistics for the requirements report."""
+        query = """
+            SELECT gp.url        AS project_url,
+                   gp.url_key    AS url_key,
+                   gp.author     AS author,
+                   ist.pattern   AS pattern,
+                   ist.position  AS position,
+                   ist.files_count   AS files_count,
+                   ist.markers_count AS markers_count
+            FROM include_stat ist
+            JOIN git_project gp ON gp.id = ist.git_project_id
+            WHERE ist.status = 1
+        """
+        params: list[Any] = []
+        if project_keys:
+            placeholders = ",".join("?" for _ in project_keys)
+            query += f" AND gp.url_key IN ({placeholders})"
+            params.extend(project_keys)
+        query += " ORDER BY gp.url, ist.position, ist.id"
+        with self.connect(readonly=True) as conn:
+            return [dict(row) for row in conn.execute(query, params).fetchall()]
 
     # -------------------------------------------------------------- scan runs
     def resolve_active_run(

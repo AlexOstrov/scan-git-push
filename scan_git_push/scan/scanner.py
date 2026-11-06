@@ -255,6 +255,14 @@ class Scanner:
             return
         self.db.initialize(create=True)
 
+    def _sync_include_patterns(self) -> None:
+        """Align ``include_stat`` rows with ``SCAN.INCLUDE`` for all projects."""
+        try:
+            with self.db.transaction() as conn:
+                self.db.sync_include_patterns(conn, self.settings.scan.include)
+        except sqlite3.Error as exc:
+            raise ScanDatabaseError(f"cannot synchronize include patterns: {exc}") from exc
+
     def resolve_projects(self) -> list[str]:
         raw = list(self.options.projects or self.settings.scan.git_projects)
         if not raw:
@@ -278,6 +286,8 @@ class Scanner:
     def run(self) -> ScanOutcome:
         projects = self.resolve_projects()
         self.prepare_database()
+        if not self.dry_run:
+            self._sync_include_patterns()
         logger.info("Scanning {} project(s)", len(projects))
 
         results: list[ProjectScanResult] = []
@@ -361,6 +371,9 @@ class Scanner:
             try:
                 with self.db.transaction() as conn:
                     project_id = self.db.ensure_project(conn, ref, base_dir)
+                    self.db.ensure_include_patterns(
+                        conn, project_id, self.settings.scan.include
+                    )
                     active = self.db.resolve_active_run(conn, project_id, self.force)
                     if active is not None:
                         result.failure_kind = "busy"
@@ -868,6 +881,8 @@ class Scanner:
                 )
 
             archived_points, _archived_reqs = self.db.recompute_statuses(conn)
+
+            self.db.recompute_include_stats(conn, project_id)
 
             self.db.finish_run(
                 conn,

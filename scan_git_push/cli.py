@@ -169,6 +169,7 @@ def _generate_requirements_report(
     try:
         db.validate()
         rows = db.requirement_report(project_keys)
+        include_rows = db.include_stats(project_keys)
     except ScanSchemaVersionError as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=EXIT_SCHEMA) from exc
@@ -177,7 +178,9 @@ def _generate_requirements_report(
         raise typer.Exit(code=EXIT_DB) from exc
 
     reporter = RequirementReporter()
-    path, stats = reporter.generate(rows, settings.output_dir)
+    path, stats = reporter.generate(
+        rows, settings.output_dir, include_rows=include_rows
+    )
 
     if json_output:
         payload = {

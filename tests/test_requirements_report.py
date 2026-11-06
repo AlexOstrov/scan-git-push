@@ -13,6 +13,7 @@ from scan_git_push.config import Settings
 from scan_git_push.git.url import normalize_url, url_key
 from scan_git_push.reporters.requirements import (
     RequirementReporter,
+    group_include_stats,
     group_requirements,
 )
 from scan_git_push.scan.database import ScanDatabase
@@ -58,6 +59,25 @@ def _row(
         "line_no": line_no,
         "committer": committer,
         "raw_marker": raw_marker,
+    }
+
+
+def _include_row(
+    *,
+    project_url: str = "https://github.com/owner/repo",
+    author: str | None = "owner",
+    pattern: str = "**/*.md",
+    position: int = 0,
+    files_count: int = 3,
+    markers_count: int = 7,
+) -> dict[str, object]:
+    return {
+        "project_url": project_url,
+        "author": author,
+        "pattern": pattern,
+        "position": position,
+        "files_count": files_count,
+        "markers_count": markers_count,
     }
 
 
@@ -131,6 +151,77 @@ class TestReporter:
         assert "Всего количество разделов - 0" in html
 
 
+class TestIncludeStats:
+    def test_grouping_preserves_position_and_author(self) -> None:
+        grouped = group_include_stats(
+            [
+                _include_row(pattern="**/*.md", position=1, files_count=2),
+                _include_row(pattern="**/*.txt", position=0, files_count=4),
+                _include_row(
+                    project_url="https://github.com/owner/second",
+                    author=None,
+                    pattern="docs/**",
+                    position=0,
+                ),
+            ]
+        )
+        assert [item["project_url"] for item in grouped] == [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/second",
+        ]
+        assert [item["pattern"] for item in grouped[0]["patterns"]] == [
+            "**/*.txt",
+            "**/*.md",
+        ]
+        assert grouped[1]["author"] is None
+
+    def test_html_contains_statistics_table(self, tmp_path: Path) -> None:
+        include_rows = [
+            _include_row(pattern="**/*.txt", position=0, files_count=4, markers_count=6),
+            _include_row(pattern="**/*.md", position=1, files_count=5, markers_count=12),
+        ]
+        path, stats = RequirementReporter().generate(
+            [_row()], tmp_path, include_rows=include_rows
+        )
+
+        html = path.read_text(encoding="utf-8")
+        assert (
+            "Сводная статистика по количеству найденных файлов и маркеров в них"
+            in html
+        )
+        assert "Шаблон файла" in html
+        assert "Количество найденных файлов" in html
+        assert "Количество найденных маркеров" in html
+        assert "автор: owner" in html
+        assert "**/*.txt" in html
+        assert "**/*.md" in html
+        assert stats["include_stats"] == [
+            {
+                "project_url": "https://github.com/owner/repo",
+                "author": "owner",
+                "patterns": [
+                    {"pattern": "**/*.txt", "files_count": 4, "markers_count": 6},
+                    {"pattern": "**/*.md", "files_count": 5, "markers_count": 12},
+                ],
+            }
+        ]
+
+    def test_missing_author_is_rendered_as_dash(self, tmp_path: Path) -> None:
+        path, _ = RequirementReporter().generate(
+            [],
+            tmp_path,
+            include_rows=[_include_row(author=None)],
+        )
+        html = path.read_text(encoding="utf-8")
+        assert "автор: —" in html
+
+    def test_section_is_absent_without_stats(self, tmp_path: Path) -> None:
+        path, stats = RequirementReporter().generate([], tmp_path)
+        html = path.read_text(encoding="utf-8")
+        assert "Сводная статистика" not in html
+        assert stats["include_stats"] == []
+
+
 class TestCli:
     def test_report_from_db_req_json(self, req_config: Path, req_repo: Path) -> None:
         runner = CliRunner()
@@ -146,11 +237,16 @@ class TestCli:
         assert payload["exit_code"] == 0
         assert payload["requirements"] > 0
         assert payload["sections"] > 0
+        assert payload["include_stats"]
+        stats = payload["include_stats"][0]
+        assert stats["patterns"]
         report = Path(payload["report"])
         assert report.exists()
         html = report.read_text(encoding="utf-8")
         assert "Отчет по требованиям и разделам" in html
         assert "ID требования: REQ_1" in html
+        assert "Сводная статистика по количеству найденных файлов и маркеров в них" in html
+        assert "Шаблон файла" in html
         assert '&lt;!-- REQ-META id=&#34;REQ_1&#34; point=&#34;1.1&#34;' in html
 
     def test_report_from_db_req_does_not_need_analysis_db(
@@ -202,6 +298,10 @@ class TestCli:
         assert result.exit_code == 0
         payload = json.loads(result.stdout)
         assert len(payload["projects"]) == 1
+        assert len(payload["include_stats"]) == 1
+        assert payload["include_stats"][0]["project_url"] == normalize_url(
+            str(first), settings.base_dir
+        )
         html = Path(payload["report"]).read_text(encoding="utf-8")
         assert normalize_url(str(first), settings.base_dir) in html
         assert normalize_url(str(second), settings.base_dir) not in html

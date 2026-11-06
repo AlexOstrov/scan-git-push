@@ -138,6 +138,7 @@ def make_config(
     max_file_size: int = 2000,
     exclude: list[str] | None = None,
     exclude_secrets: list[str] | None = None,
+    include: list[str] | None = None,
     db_path: str = "db/scan.db",
     branches: str | list[str] = "all",
     branch_include: list[str] | None = None,
@@ -156,6 +157,7 @@ def make_config(
             "BRANCHES": branches,
             "BRANCH_INCLUDE": branch_include or [],
             "BRANCH_EXCLUDE": branch_exclude or [],
+            "INCLUDE": include if include is not None else ["**/*.txt", "**/*.md"],
             "MAX_FILE_SIZE": max_file_size,
             "EXCLUDE": exclude or [],
             "EXCLUDE_SECRETS": exclude_secrets or [],
@@ -212,7 +214,7 @@ class TestSchemaAndInitialScan:
         assert project.io_errors == 0
 
         db = ScanDatabase(Settings.from_file(config).scan_db_path)
-        assert db.schema_version() == 3
+        assert db.schema_version() == 4
         occurrences = db.occurrences(project.project)
         points = {(item["code"], item["point"]) for item in occurrences}
         assert ("REQ_1", "1.1") in points
@@ -717,6 +719,58 @@ class TestCommitHistory:
         branch, paths = calls[0]
         assert branch == "main"
         assert paths == ["docs/new.md", "docs/req.md"]
+
+
+class TestIncludeStats:
+    def test_scan_populates_include_stat(self, config: Path) -> None:
+        outcome, _ = run_scanner(config)
+        assert outcome.exit_code == 0
+
+        db = ScanDatabase(Settings.from_file(config).scan_db_path)
+        rows = db.include_stats()
+        assert [row["pattern"] for row in rows] == ["**/*.txt", "**/*.md"]
+        by_pattern = {row["pattern"]: row for row in rows}
+
+        # Feature + main share docs/second.txt and docs/cp1251.txt; docs/req.md
+        # and docs/notes.md are present on both branches, docs/feature.md only
+        # on the feature branch.
+        assert by_pattern["**/*.md"]["files_count"] == 5
+        assert by_pattern["**/*.md"]["markers_count"] == 12
+        assert by_pattern["**/*.txt"]["files_count"] == 4
+        assert by_pattern["**/*.txt"]["markers_count"] == 6
+
+        # A second run without changes keeps the same counters and rows.
+        run_scanner(config)
+        assert db.include_stats() == rows
+
+    def test_scan_synchronizes_patterns_with_config(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        config = make_config(tmp_path, [str(repo)], include=["**/*.md"])
+        assert run_scanner(config)[0].exit_code == 0
+
+        settings = Settings.from_file(config)
+        db = ScanDatabase(settings.scan_db_path)
+        assert [row["pattern"] for row in db.include_stats()] == ["**/*.md"]
+
+        # A new pattern gets a zero-count row and is filled by the same scan.
+        config = make_config(
+            tmp_path, [str(repo)], include=["**/*.md", "**/*.txt"]
+        )
+        assert run_scanner(config)[0].exit_code == 0
+        rows = db.include_stats()
+        assert [row["pattern"] for row in rows] == ["**/*.md", "**/*.txt"]
+        assert rows[1]["files_count"] == 4
+        assert rows[1]["markers_count"] == 6
+
+        # Removing a pattern archives it for the project and hides it in reports.
+        config = make_config(tmp_path, [str(repo)], include=["**/*.txt"])
+        assert run_scanner(config)[0].exit_code == 0
+        assert [row["pattern"] for row in db.include_stats()] == ["**/*.txt"]
+        with db.connect(readonly=True) as conn:
+            archived = conn.execute(
+                "SELECT status FROM include_stat WHERE pattern = '**/*.md'"
+            ).fetchone()
+        assert archived["status"] == 0
 
 
 class TestAnalysisIntegration:

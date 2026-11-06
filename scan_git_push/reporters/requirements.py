@@ -91,6 +91,32 @@ h1 { color: var(--accent); font-size: 1.9em; margin-bottom: 4px; }
 }
 .totals h2 { color: var(--accent); font-size: 1.1em; margin-bottom: 8px; }
 .totals p { font-size: 0.95em; }
+.include-stats {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  margin-top: 20px;
+}
+.include-stats > h2 { color: var(--accent); font-size: 1.1em; margin-bottom: 12px; }
+.include-project { margin-bottom: 18px; }
+.include-project:last-child { margin-bottom: 0; }
+.include-project > h3 {
+  color: var(--green);
+  font-size: 1em;
+  margin-bottom: 8px;
+  word-break: break-all;
+}
+.include-project table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.include-project th,
+.include-project td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+}
+.include-project th { background: #21262d; color: var(--muted); font-weight: 600; }
+.include-project td:not(:first-child),
+.include-project th:not(:first-child) { text-align: right; }
 .empty { color: var(--muted); }
 .footer { color: var(--muted); font-size: 0.8em; text-align: center; margin-top: 28px; }
 </style>
@@ -129,6 +155,35 @@ h1 { color: var(--accent); font-size: 1.9em; margin-bottom: 4px; }
   <p>Всего количество требований - {{ total_requirements }}</p>
   <p>Всего количество разделов - {{ total_sections }}</p>
 </div>
+
+{% if include_stats %}
+<div class="include-stats">
+  <h2>Сводная статистика по количеству найденных файлов и маркеров в них</h2>
+  {% for project in include_stats %}
+  <div class="include-project">
+    <h3>Проект: <a href="{{ project.project_url }}">{{ project.project_url }}</a>, автор: {{ project.author or "—" }}</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Шаблон файла</th>
+          <th>Количество найденных файлов</th>
+          <th>Количество найденных маркеров</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in project.patterns %}
+        <tr>
+          <td><code>{{ item.pattern }}</code></td>
+          <td>{{ item.files_count }}</td>
+          <td>{{ item.markers_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
 
 <p class="footer">scan-git-push v{{ version }}</p>
 </div>
@@ -182,6 +237,40 @@ def group_requirements(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return requirements
 
 
+def group_include_stats(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group per-pattern counters into projects for the final report table."""
+    grouped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        url = str(row["project_url"])
+        project = grouped.setdefault(
+            url,
+            {
+                "project_url": url,
+                "author": row.get("author") or None,
+                "patterns": [],
+            },
+        )
+        if project["author"] is None:
+            project["author"] = row.get("author") or None
+        project["patterns"].append(
+            {
+                "position": int(row.get("position") or 0),
+                "pattern": str(row["pattern"]),
+                "files_count": int(row.get("files_count") or 0),
+                "markers_count": int(row.get("markers_count") or 0),
+            }
+        )
+
+    projects = list(grouped.values())
+    for project in projects:
+        project["patterns"].sort(
+            key=lambda item: (item["position"], item["pattern"])
+        )
+        for item in project["patterns"]:
+            item.pop("position", None)
+    return projects
+
+
 class RequirementReporter:
     """Generates a self-contained HTML report for ``report-from-db --req``."""
 
@@ -193,16 +282,20 @@ class RequirementReporter:
         rows: Iterable[dict[str, Any]],
         output_dir: Path,
         date: datetime | None = None,
+        *,
+        include_rows: Iterable[dict[str, Any]] | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         """Write the report and return ``(path, stats)``."""
         generated = date or datetime.now()
         requirements = group_requirements(rows)
+        include_stats = group_include_stats(include_rows or [])
         total_requirements = len(requirements)
         total_sections = sum(len(item["sections"]) for item in requirements)
 
         template = self.env.from_string(REQUIREMENTS_TEMPLATE)
         content = template.render(
             requirements=requirements,
+            include_stats=include_stats,
             generated_at=generated.strftime("%Y-%m-%d %H:%M:%S"),
             total_requirements=total_requirements,
             total_sections=total_sections,
@@ -218,5 +311,6 @@ class RequirementReporter:
             "report": str(filename),
             "requirements": total_requirements,
             "sections": total_sections,
+            "include_stats": include_stats,
             "generated_at": generated.isoformat(timespec="seconds"),
         }
