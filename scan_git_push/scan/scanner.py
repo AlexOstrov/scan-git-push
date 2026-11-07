@@ -371,9 +371,6 @@ class Scanner:
             try:
                 with self.db.transaction() as conn:
                     project_id = self.db.ensure_project(conn, ref, base_dir)
-                    self.db.ensure_include_patterns(
-                        conn, project_id, self.settings.scan.include
-                    )
                     active = self.db.resolve_active_run(conn, project_id, self.force)
                     if active is not None:
                         result.failure_kind = "busy"
@@ -880,9 +877,21 @@ class Scanner:
                     conn, project_id, [item.name for item in branch_results]
                 )
 
+            successful_branches = [
+                item.name for item in branch_results if item.ok
+            ]
+            self.db.ensure_include_patterns(
+                conn,
+                project_id,
+                successful_branches,
+                self.settings.scan.include,
+            )
+
             archived_points, _archived_reqs = self.db.recompute_statuses(conn)
 
-            self.db.recompute_include_stats(conn, project_id)
+            self.db.recompute_include_stats(
+                conn, project_id, successful_branches
+            )
 
             self.db.finish_run(
                 conn,

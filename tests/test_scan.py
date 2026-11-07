@@ -214,7 +214,7 @@ class TestSchemaAndInitialScan:
         assert project.io_errors == 0
 
         db = ScanDatabase(Settings.from_file(config).scan_db_path)
-        assert db.schema_version() == 4
+        assert db.schema_version() == 5
         occurrences = db.occurrences(project.project)
         points = {(item["code"], item["point"]) for item in occurrences}
         assert ("REQ_1", "1.1") in points
@@ -722,22 +722,30 @@ class TestCommitHistory:
 
 
 class TestIncludeStats:
-    def test_scan_populates_include_stat(self, config: Path) -> None:
+    def test_scan_populates_include_stat_per_branch(self, config: Path) -> None:
         outcome, _ = run_scanner(config)
         assert outcome.exit_code == 0
 
         db = ScanDatabase(Settings.from_file(config).scan_db_path)
         rows = db.include_stats()
-        assert [row["pattern"] for row in rows] == ["**/*.txt", "**/*.md"]
-        by_pattern = {row["pattern"]: row for row in rows}
+        assert [(row["branch"], row["pattern"]) for row in rows] == [
+            ("feature", "**/*.txt"),
+            ("feature", "**/*.md"),
+            ("main", "**/*.txt"),
+            ("main", "**/*.md"),
+        ]
+        by_key = {(row["branch"], row["pattern"]): row for row in rows}
 
-        # Feature + main share docs/second.txt and docs/cp1251.txt; docs/req.md
-        # and docs/notes.md are present on both branches, docs/feature.md only
-        # on the feature branch.
-        assert by_pattern["**/*.md"]["files_count"] == 5
-        assert by_pattern["**/*.md"]["markers_count"] == 12
-        assert by_pattern["**/*.txt"]["files_count"] == 4
-        assert by_pattern["**/*.txt"]["markers_count"] == 6
+        # On both branches docs/second.txt and docs/cp1251.txt are text files.
+        for branch in ("feature", "main"):
+            assert by_key[(branch, "**/*.txt")]["files_count"] == 2
+            assert by_key[(branch, "**/*.txt")]["markers_count"] == 3
+
+        # docs/feature.md exists only on the feature branch.
+        assert by_key[("feature", "**/*.md")]["files_count"] == 3
+        assert by_key[("feature", "**/*.md")]["markers_count"] == 7
+        assert by_key[("main", "**/*.md")]["files_count"] == 2
+        assert by_key[("main", "**/*.md")]["markers_count"] == 5
 
         # A second run without changes keeps the same counters and rows.
         run_scanner(config)
@@ -750,27 +758,51 @@ class TestIncludeStats:
 
         settings = Settings.from_file(config)
         db = ScanDatabase(settings.scan_db_path)
-        assert [row["pattern"] for row in db.include_stats()] == ["**/*.md"]
+        assert {
+            (row["branch"], row["pattern"]) for row in db.include_stats()
+        } == {("feature", "**/*.md"), ("main", "**/*.md")}
 
-        # A new pattern gets a zero-count row and is filled by the same scan.
+        # A new pattern gets zero-start rows and is filled by the same scan.
         config = make_config(
             tmp_path, [str(repo)], include=["**/*.md", "**/*.txt"]
         )
         assert run_scanner(config)[0].exit_code == 0
-        rows = db.include_stats()
-        assert [row["pattern"] for row in rows] == ["**/*.md", "**/*.txt"]
-        assert rows[1]["files_count"] == 4
-        assert rows[1]["markers_count"] == 6
+        by_key = {
+            (row["branch"], row["pattern"]): row
+            for row in db.include_stats()
+        }
+        assert {
+            (branch, pattern) for branch, pattern in by_key
+        } == {
+            (branch, pattern)
+            for branch in ("feature", "main")
+            for pattern in ("**/*.md", "**/*.txt")
+        }
+        assert by_key[("main", "**/*.txt")]["files_count"] == 2
+        assert by_key[("main", "**/*.txt")]["markers_count"] == 3
 
-        # Removing a pattern archives it for the project and hides it in reports.
+        # Removing a pattern archives it for every branch and hides it.
         config = make_config(tmp_path, [str(repo)], include=["**/*.txt"])
         assert run_scanner(config)[0].exit_code == 0
-        assert [row["pattern"] for row in db.include_stats()] == ["**/*.txt"]
+        remaining = db.include_stats()
+        assert {(row["branch"], row["pattern"]) for row in remaining} == {
+            ("feature", "**/*.txt"),
+            ("main", "**/*.txt"),
+        }
         with db.connect(readonly=True) as conn:
             archived = conn.execute(
-                "SELECT status FROM include_stat WHERE pattern = '**/*.md'"
-            ).fetchone()
-        assert archived["status"] == 0
+                "SELECT DISTINCT status FROM include_stat WHERE pattern = '**/*.md'"
+            ).fetchall()
+        assert [row["status"] for row in archived] == [0]
+
+    def test_removed_branch_stats_are_deleted(self, config: Path, repo: Path) -> None:
+        assert run_scanner(config)[0].exit_code == 0
+        db = ScanDatabase(Settings.from_file(config).scan_db_path)
+        assert {row["branch"] for row in db.include_stats()} == {"feature", "main"}
+
+        git(["branch", "-D", "feature"], repo)
+        assert run_scanner(config)[0].exit_code == 0
+        assert {row["branch"] for row in db.include_stats()} == {"main"}
 
 
 class TestAnalysisIntegration:

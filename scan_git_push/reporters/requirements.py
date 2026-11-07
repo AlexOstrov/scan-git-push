@@ -115,8 +115,10 @@ h1 { color: var(--accent); font-size: 1.9em; margin-bottom: 4px; }
   text-align: left;
 }
 .include-project th { background: #21262d; color: var(--muted); font-weight: 600; }
-.include-project td:not(:first-child),
-.include-project th:not(:first-child) { text-align: right; }
+.include-project td:nth-child(3),
+.include-project td:nth-child(4),
+.include-project th:nth-child(3),
+.include-project th:nth-child(4) { text-align: right; }
 .empty { color: var(--muted); }
 .footer { color: var(--muted); font-size: 0.8em; text-align: center; margin-top: 28px; }
 </style>
@@ -165,18 +167,22 @@ h1 { color: var(--accent); font-size: 1.9em; margin-bottom: 4px; }
     <table>
       <thead>
         <tr>
+          <th>Ветка проекта</th>
           <th>Шаблон файла</th>
           <th>Количество найденных файлов</th>
           <th>Количество найденных маркеров</th>
         </tr>
       </thead>
       <tbody>
-        {% for item in project.patterns %}
+        {% for branch in project.branches %}
+        {% for item in branch.patterns %}
         <tr>
+          <td><code>{{ branch.branch }}</code></td>
           <td><code>{{ item.pattern }}</code></td>
           <td>{{ item.files_count }}</td>
           <td>{{ item.markers_count }}</td>
         </tr>
+        {% endfor %}
         {% endfor %}
       </tbody>
     </table>
@@ -238,7 +244,7 @@ def group_requirements(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def group_include_stats(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Group per-pattern counters into projects for the final report table."""
+    """Group per-branch counters into projects for the final report table."""
     grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         url = str(row["project_url"])
@@ -247,12 +253,17 @@ def group_include_stats(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "project_url": url,
                 "author": row.get("author") or None,
-                "patterns": [],
+                "branches": {},
             },
         )
         if project["author"] is None:
             project["author"] = row.get("author") or None
-        project["patterns"].append(
+        branch_name = str(row["branch"])
+        branch = project["branches"].setdefault(
+            branch_name,
+            {"branch": branch_name, "patterns": []},
+        )
+        branch["patterns"].append(
             {
                 "position": int(row.get("position") or 0),
                 "pattern": str(row["pattern"]),
@@ -263,11 +274,15 @@ def group_include_stats(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
     projects = list(grouped.values())
     for project in projects:
-        project["patterns"].sort(
-            key=lambda item: (item["position"], item["pattern"])
-        )
-        for item in project["patterns"]:
-            item.pop("position", None)
+        branches = list(project["branches"].values())
+        branches.sort(key=lambda item: _natural_key(item["branch"]))
+        for branch in branches:
+            branch["patterns"].sort(
+                key=lambda item: (item["position"], item["pattern"])
+            )
+            for item in branch["patterns"]:
+                item.pop("position", None)
+        project["branches"] = branches
     return projects
 
 

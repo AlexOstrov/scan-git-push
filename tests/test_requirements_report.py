@@ -66,6 +66,7 @@ def _include_row(
     *,
     project_url: str = "https://github.com/owner/repo",
     author: str | None = "owner",
+    branch: str = "main",
     pattern: str = "**/*.md",
     position: int = 0,
     files_count: int = 3,
@@ -74,6 +75,7 @@ def _include_row(
     return {
         "project_url": project_url,
         "author": author,
+        "branch": branch,
         "pattern": pattern,
         "position": position,
         "files_count": files_count,
@@ -152,14 +154,16 @@ class TestReporter:
 
 
 class TestIncludeStats:
-    def test_grouping_preserves_position_and_author(self) -> None:
+    def test_grouping_preserves_branch_and_position(self) -> None:
         grouped = group_include_stats(
             [
-                _include_row(pattern="**/*.md", position=1, files_count=2),
-                _include_row(pattern="**/*.txt", position=0, files_count=4),
+                _include_row(branch="main", pattern="**/*.md", position=1, files_count=2),
+                _include_row(branch="main", pattern="**/*.txt", position=0, files_count=4),
+                _include_row(branch="feature", pattern="**/*.md", position=1),
                 _include_row(
                     project_url="https://github.com/owner/second",
                     author=None,
+                    branch="main",
                     pattern="docs/**",
                     position=0,
                 ),
@@ -169,16 +173,52 @@ class TestIncludeStats:
             "https://github.com/owner/repo",
             "https://github.com/owner/second",
         ]
-        assert [item["pattern"] for item in grouped[0]["patterns"]] == [
-            "**/*.txt",
-            "**/*.md",
+        assert [item["branch"] for item in grouped[0]["branches"]] == [
+            "feature",
+            "main",
         ]
+        assert [
+            item["pattern"] for item in grouped[0]["branches"][1]["patterns"]
+        ] == ["**/*.txt", "**/*.md"]
         assert grouped[1]["author"] is None
+
+    def test_grouping_sorts_branches_naturally(self) -> None:
+        grouped = group_include_stats(
+            [
+                _include_row(branch="release/10", pattern="**/*.md", position=0),
+                _include_row(branch="release/2", pattern="**/*.md", position=0),
+                _include_row(branch="main", pattern="**/*.md", position=0),
+            ]
+        )
+        assert [item["branch"] for item in grouped[0]["branches"]] == [
+            "main",
+            "release/2",
+            "release/10",
+        ]
 
     def test_html_contains_statistics_table(self, tmp_path: Path) -> None:
         include_rows = [
-            _include_row(pattern="**/*.txt", position=0, files_count=4, markers_count=6),
-            _include_row(pattern="**/*.md", position=1, files_count=5, markers_count=12),
+            _include_row(
+                branch="main",
+                pattern="**/*.txt",
+                position=0,
+                files_count=4,
+                markers_count=6,
+            ),
+            _include_row(
+                branch="main",
+                pattern="**/*.md",
+                position=1,
+                files_count=5,
+                markers_count=12,
+            ),
+            _include_row(
+                branch="feature",
+                pattern="**/*.txt",
+                position=0,
+                files_count=0,
+                markers_count=0,
+            ),
         ]
         path, stats = RequirementReporter().generate(
             [_row()], tmp_path, include_rows=include_rows
@@ -189,19 +229,45 @@ class TestIncludeStats:
             "Сводная статистика по количеству найденных файлов и маркеров в них"
             in html
         )
+        assert "Ветка проекта" in html
         assert "Шаблон файла" in html
         assert "Количество найденных файлов" in html
         assert "Количество найденных маркеров" in html
         assert "автор: owner" in html
         assert "**/*.txt" in html
         assert "**/*.md" in html
+        assert "<code>feature</code>" in html
+        assert "<code>main</code>" in html
         assert stats["include_stats"] == [
             {
                 "project_url": "https://github.com/owner/repo",
                 "author": "owner",
-                "patterns": [
-                    {"pattern": "**/*.txt", "files_count": 4, "markers_count": 6},
-                    {"pattern": "**/*.md", "files_count": 5, "markers_count": 12},
+                "branches": [
+                    {
+                        "branch": "feature",
+                        "patterns": [
+                            {
+                                "pattern": "**/*.txt",
+                                "files_count": 0,
+                                "markers_count": 0,
+                            }
+                        ],
+                    },
+                    {
+                        "branch": "main",
+                        "patterns": [
+                            {
+                                "pattern": "**/*.txt",
+                                "files_count": 4,
+                                "markers_count": 6,
+                            },
+                            {
+                                "pattern": "**/*.md",
+                                "files_count": 5,
+                                "markers_count": 12,
+                            },
+                        ],
+                    },
                 ],
             }
         ]
@@ -239,13 +305,16 @@ class TestCli:
         assert payload["sections"] > 0
         assert payload["include_stats"]
         stats = payload["include_stats"][0]
-        assert stats["patterns"]
+        assert stats["branches"]
+        assert stats["branches"][0]["branch"]
+        assert stats["branches"][0]["patterns"]
         report = Path(payload["report"])
         assert report.exists()
         html = report.read_text(encoding="utf-8")
         assert "Отчет по требованиям и разделам" in html
         assert "ID требования: REQ_1" in html
         assert "Сводная статистика по количеству найденных файлов и маркеров в них" in html
+        assert "Ветка проекта" in html
         assert "Шаблон файла" in html
         assert '&lt;!-- REQ-META id=&#34;REQ_1&#34; point=&#34;1.1&#34;' in html
 

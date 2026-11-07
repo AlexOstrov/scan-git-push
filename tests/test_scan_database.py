@@ -1,4 +1,4 @@
-"""Tests for ``scan.db`` (schema version 4)."""
+"""Tests for ``scan.db`` (schema version 5)."""
 
 from __future__ import annotations
 
@@ -41,10 +41,43 @@ def _path_hash(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _insert_snapshot(
+    conn: sqlite3.Connection,
+    db: ScanDatabase,
+    project_id: int,
+    branch: str,
+    path: str,
+    *,
+    markers: int = 0,
+    point_id: int | None = None,
+) -> int:
+    blob_hash = _path_hash(f"{branch}:{path}")
+    db.upsert_file_hash(conn, blob_hash, 10)
+    file_id = db.upsert_snapshot(
+        conn,
+        project_id=project_id,
+        branch=branch,
+        path=path,
+        blob_hash=blob_hash,
+        commit_sha="abc",
+        author="author",
+        committer="committer",
+        encoding="utf-8",
+        parser_version=2,
+    )
+    if markers and point_id is not None:
+        db.replace_occurrences(
+            conn,
+            file_id,
+            [(point_id, line, "raw") for line in range(1, markers + 1)],
+        )
+    return file_id
+
+
 class TestSchema:
     def test_creates_current_version(self, scan_db: ScanDatabase) -> None:
         assert scan_db.schema_version() == SCAN_SCHEMA_VERSION
-        assert SCAN_SCHEMA_VERSION == 4
+        assert SCAN_SCHEMA_VERSION == 5
         with scan_db.connect() as conn:
             names = {
                 row[0]
@@ -75,6 +108,28 @@ class TestSchema:
                 row[1] for row in conn.execute("PRAGMA table_info(file_hash)")
             }
         assert columns == {"hash", "size_bytes", "created_at"}
+
+    def test_include_stat_has_branch_key(self, scan_db: ScanDatabase) -> None:
+        with scan_db.connect() as conn:
+            columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(include_stat)")
+            }
+            indexes = conn.execute("PRAGMA index_list(include_stat)").fetchall()
+        assert "branch" in columns
+        unique_columns = set()
+        with scan_db.connect(readonly=True) as conn:
+            for index in indexes:
+                if not index["unique"]:
+                    continue
+                unique_columns.add(
+                    tuple(
+                        row["name"]
+                        for row in conn.execute(
+                            f"PRAGMA index_info({index['name']})"
+                        )
+                    )
+                )
+        assert ("git_project_id", "branch", "pattern") in unique_columns
 
     def test_export_and_number_columns(self, scan_db: ScanDatabase) -> None:
         with scan_db.connect() as conn:
@@ -118,7 +173,7 @@ class TestSchema:
         with pytest.raises(ScanSchemaVersionError):
             ScanDatabase(path).initialize()
 
-    @pytest.mark.parametrize("version", [0, 1, 2, 3, 99])
+    @pytest.mark.parametrize("version", [0, 1, 2, 3, 4, 99])
     def test_incompatible_version_raises(self, tmp_path: Path, version: int) -> None:
         path = tmp_path / "scan.db"
         db = ScanDatabase(path)
@@ -194,40 +249,50 @@ class TestCascades:
 
 
 class TestIncludeStat:
-    def test_sync_creates_rows_for_all_projects(self, scan_db: ScanDatabase) -> None:
+    def test_sync_creates_rows_for_all_projects_and_branches(
+        self, scan_db: ScanDatabase
+    ) -> None:
         with scan_db.transaction() as conn:
             first = _insert_project(conn, scan_db)
             second = scan_db.ensure_project(conn, "https://github.com/owner/other")
+            for project_id in (first, second):
+                _insert_snapshot(conn, scan_db, project_id, "main", "docs/a.md")
+                _insert_snapshot(conn, scan_db, project_id, "feature", "docs/b.txt")
             scan_db.sync_include_patterns(conn, ["**/*.txt", "**/*.md"])
 
         with scan_db.connect(readonly=True) as conn:
             rows = conn.execute(
-                "SELECT git_project_id, pattern, position, files_count, "
+                "SELECT git_project_id, branch, pattern, position, files_count, "
                 "markers_count, status FROM include_stat "
-                "ORDER BY git_project_id, position"
+                "ORDER BY git_project_id, branch, position"
             ).fetchall()
-        assert len(rows) == 4
+        assert len(rows) == 8
         for project_id in (first, second):
-            project_rows = [
-                row for row in rows if row["git_project_id"] == project_id
-            ]
-            assert [row["pattern"] for row in project_rows] == [
-                "**/*.txt",
-                "**/*.md",
-            ]
-            assert [row["position"] for row in project_rows] == [0, 1]
-            assert all(
-                row["files_count"] == 0
-                and row["markers_count"] == 0
-                and row["status"] == 1
-                for row in project_rows
-            )
+            for branch in ("feature", "main"):
+                project_rows = [
+                    row
+                    for row in rows
+                    if row["git_project_id"] == project_id
+                    and row["branch"] == branch
+                ]
+                assert [row["pattern"] for row in project_rows] == [
+                    "**/*.txt",
+                    "**/*.md",
+                ]
+                assert [row["position"] for row in project_rows] == [0, 1]
+                assert all(
+                    row["files_count"] == 0
+                    and row["markers_count"] == 0
+                    and row["status"] == 1
+                    for row in project_rows
+                )
 
     def test_sync_is_idempotent_and_preserves_counts(
         self, scan_db: ScanDatabase
     ) -> None:
         with scan_db.transaction() as conn:
-            _insert_project(conn, scan_db)
+            project_id = _insert_project(conn, scan_db)
+            _insert_snapshot(conn, scan_db, project_id, "main", "docs/a.md")
             scan_db.sync_include_patterns(conn, ["a", "b"])
             conn.execute(
                 "UPDATE include_stat SET files_count = 3, markers_count = 4 "
@@ -237,7 +302,7 @@ class TestIncludeStat:
             count = conn.execute("SELECT COUNT(*) FROM include_stat").fetchone()[0]
             row = conn.execute(
                 "SELECT files_count, markers_count FROM include_stat "
-                "WHERE pattern = 'a'"
+                "WHERE branch = 'main' AND pattern = 'a'"
             ).fetchone()
         assert count == 2
         assert (row["files_count"], row["markers_count"]) == (3, 4)
@@ -246,7 +311,8 @@ class TestIncludeStat:
         self, scan_db: ScanDatabase
     ) -> None:
         with scan_db.transaction() as conn:
-            _insert_project(conn, scan_db)
+            project_id = _insert_project(conn, scan_db)
+            _insert_snapshot(conn, scan_db, project_id, "main", "docs/a.md")
             scan_db.sync_include_patterns(conn, ["a", "b"])
             conn.execute(
                 "UPDATE include_stat SET files_count = 5, markers_count = 6 "
@@ -254,12 +320,13 @@ class TestIncludeStat:
             )
             scan_db.sync_include_patterns(conn, ["a"])
             archived = conn.execute(
-                "SELECT status FROM include_stat WHERE pattern = 'b'"
+                "SELECT status FROM include_stat "
+                "WHERE branch = 'main' AND pattern = 'b'"
             ).fetchone()
             scan_db.sync_include_patterns(conn, ["a", "b"])
             active = conn.execute(
                 "SELECT status, position, files_count, markers_count "
-                "FROM include_stat WHERE pattern = 'b'"
+                "FROM include_stat WHERE branch = 'main' AND pattern = 'b'"
             ).fetchone()
         assert archived["status"] == 0
         assert active["status"] == 1
@@ -271,11 +338,12 @@ class TestIncludeStat:
     ) -> None:
         with scan_db.transaction() as conn:
             project_id = _insert_project(conn, scan_db)
+            _insert_snapshot(conn, scan_db, project_id, "main", "docs/a.md")
             scan_db.sync_include_patterns(conn, ["a"])
             conn.execute("DELETE FROM git_project WHERE id = ?", (project_id,))
             assert conn.execute("SELECT COUNT(*) FROM include_stat").fetchone()[0] == 0
 
-    def test_recompute_counts_files_and_markers(
+    def test_recompute_counts_files_and_markers_per_branch(
         self, scan_db: ScanDatabase
     ) -> None:
         with scan_db.transaction() as conn:
@@ -287,51 +355,94 @@ class TestIncludeStat:
                 ("main", "docs/b.txt"): 1,
                 ("main", "src/c.py"): 1,
                 ("feature", "docs/a.md"): 1,
+                ("feature", "docs/empty.md"): 0,
             }
             for (branch, path), markers in files.items():
-                blob_hash = _path_hash(f"{branch}:{path}")
-                scan_db.upsert_file_hash(conn, blob_hash, 10)
-                file_id = scan_db.upsert_snapshot(
+                _insert_snapshot(
                     conn,
-                    project_id=project_id,
-                    branch=branch,
-                    path=path,
-                    blob_hash=blob_hash,
-                    commit_sha="abc",
-                    author="author",
-                    committer="committer",
-                    encoding="utf-8",
-                    parser_version=2,
-                )
-                scan_db.replace_occurrences(
-                    conn,
-                    file_id,
-                    [(point_id, line, "raw") for line in range(1, markers + 1)],
+                    scan_db,
+                    project_id,
+                    branch,
+                    path,
+                    markers=markers,
+                    point_id=point_id,
                 )
             scan_db.sync_include_patterns(
                 conn, ["**/*.md", "**/*.txt", "docs/**"]
             )
-            scan_db.recompute_include_stats(conn, project_id)
+            scan_db.recompute_include_stats(
+                conn, project_id, ["main", "feature"]
+            )
 
         with scan_db.connect(readonly=True) as conn:
             rows = {
-                row["pattern"]: row
+                (row["branch"], row["pattern"]): row
                 for row in conn.execute(
-                    "SELECT pattern, files_count, markers_count FROM include_stat"
+                    "SELECT branch, pattern, files_count, markers_count "
+                    "FROM include_stat"
                 )
             }
-        assert (rows["**/*.md"]["files_count"], rows["**/*.md"]["markers_count"]) == (
-            2,
-            3,
-        )
-        assert (rows["**/*.txt"]["files_count"], rows["**/*.txt"]["markers_count"]) == (
-            1,
-            1,
-        )
-        assert (rows["docs/**"]["files_count"], rows["docs/**"]["markers_count"]) == (
-            3,
-            4,
-        )
+        assert (
+            rows[("main", "**/*.md")]["files_count"],
+            rows[("main", "**/*.md")]["markers_count"],
+        ) == (1, 2)
+        assert (
+            rows[("main", "**/*.txt")]["files_count"],
+            rows[("main", "**/*.txt")]["markers_count"],
+        ) == (1, 1)
+        assert (
+            rows[("main", "docs/**")]["files_count"],
+            rows[("main", "docs/**")]["markers_count"],
+        ) == (2, 3)
+        assert (
+            rows[("feature", "**/*.md")]["files_count"],
+            rows[("feature", "**/*.md")]["markers_count"],
+        ) == (2, 1)
+        assert (
+            rows[("feature", "**/*.txt")]["files_count"],
+            rows[("feature", "**/*.txt")]["markers_count"],
+        ) == (0, 0)
+        assert (
+            rows[("feature", "docs/**")]["files_count"],
+            rows[("feature", "docs/**")]["markers_count"],
+        ) == (2, 1)
+
+    def test_recompute_preserves_untouched_branch(
+        self, scan_db: ScanDatabase
+    ) -> None:
+        with scan_db.transaction() as conn:
+            project_id = _insert_project(conn, scan_db)
+            _insert_snapshot(conn, scan_db, project_id, "main", "docs/a.md")
+            _insert_snapshot(conn, scan_db, project_id, "feature", "docs/b.md")
+            scan_db.sync_include_patterns(conn, ["**/*.md"])
+            scan_db.recompute_include_stats(
+                conn, project_id, ["main", "feature"]
+            )
+            conn.execute(
+                "UPDATE include_stat SET files_count = 9, markers_count = 9 "
+                "WHERE branch = 'feature'"
+            )
+            scan_db.recompute_include_stats(conn, project_id, ["main"])
+            feature = conn.execute(
+                "SELECT files_count, markers_count FROM include_stat "
+                "WHERE branch = 'feature'"
+            ).fetchone()
+        assert (feature["files_count"], feature["markers_count"]) == (9, 9)
+
+    def test_delete_missing_branches_removes_stats(
+        self, scan_db: ScanDatabase
+    ) -> None:
+        with scan_db.transaction() as conn:
+            project_id = _insert_project(conn, scan_db)
+            _insert_snapshot(conn, scan_db, project_id, "main", "docs/a.md")
+            _insert_snapshot(conn, scan_db, project_id, "feature", "docs/b.md")
+            scan_db.sync_include_patterns(conn, ["**/*.md"])
+            scan_db.delete_missing_branches(conn, project_id, ["main"])
+            branches = {
+                row["branch"]
+                for row in conn.execute("SELECT branch FROM include_stat")
+            }
+        assert branches == {"main"}
 
 
 class TestConstraints:
